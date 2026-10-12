@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-**Vulkan-accelerated video quality evaluation for Windows and Linux.**
+**Vulkan-accelerated VMAF video quality assessment for Windows and Linux.**
 
 > [!IMPORTANT]
 > This version is still in early development. Linux support is incomplete, and

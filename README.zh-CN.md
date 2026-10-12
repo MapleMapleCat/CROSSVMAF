@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-**面向 Windows 和 Linux 的 Vulkan 加速视频质量评估工具。**
+**面向 Windows 和 Linux 的 Vulkan 加速 VMAF 视频质量评估工具。**
 
 > [!IMPORTANT]
 > 当前版本仍处于早期开发阶段，Linux 支持尚不完善，Windows 版本也可能存在兼容性问题。
