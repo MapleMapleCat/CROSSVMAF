@@ -1,0 +1,106 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer MetricPartials {
+    uvec2 values[];
+} metric_partials;
+layout(set = 0, binding = 1, std430) writeonly buffer RowSums {
+    uvec2 values[];
+} row_sums;
+
+layout(push_constant) uniform Parameters {
+    uint width;
+    uint height;
+    uint scale;
+    uint row_capacity;
+    uint segment_count;
+    uint segment_capacity;
+#if defined(CROSSVMAF_ADM3_STREAMING_PREFIX)
+    uint packed_row_offset_elements;
+    uint packed_row_channel_stride_elements;
+#endif
+} parameters;
+
+shared uvec2 segment_sums[32];
+
+uint ceil_log2_u32(uint value) {
+    return value <= 1u ? 0u : uint(findMSB(value - 1u) + 1);
+}
+
+uint border_start(uint size) {
+    return size < 5u ? 0u : (size - 5u) / 10u;
+}
+
+uvec2 load_partial(uint channel, uint row_index, uint segment_index) {
+    const uint index =
+        channel * parameters.row_capacity * parameters.segment_capacity +
+        row_index * parameters.segment_capacity + segment_index;
+    return metric_partials.values[index];
+}
+
+uvec2 apply_row_round_shift(
+    uvec2 value, uint channel, uint region_width, uint region_height) {
+    uint shift = 0u;
+    if (channel < 3u) {
+        const uint area_log = ceil_log2_u32(region_width * region_height);
+        shift = parameters.scale == 0u
+            ? (area_log > 20u ? area_log - 20u : 0u)
+            : ceil_log2_u32(region_height);
+    } else if (channel < 9u) {
+        shift = ceil_log2_u32(parameters.height);
+    }
+    if (shift == 0u) return value;
+    const uvec2 rounding = cv_u64_shift_left(
+        uvec2(1u, 0u), shift - 1u);
+    return cv_u64_shift_right(cv_u64_add(value, rounding), shift);
+}
+
+void main() {
+    const uint channel = gl_WorkGroupID.y;
+    const uint local_index = gl_LocalInvocationIndex;
+    const uint lanes_per_row = min(32u, 1u << ceil_log2_u32(parameters.segment_count));
+    const uint rows_per_group = 32u / lanes_per_row;
+    const uint row_lane = local_index % lanes_per_row;
+    const uint row_index = gl_WorkGroupID.x * rows_per_group + local_index / lanes_per_row;
+    const uint horizontal_border = border_start(parameters.width);
+    const uint vertical_border = border_start(parameters.height);
+    const uint region_width = parameters.width - 2u * horizontal_border;
+    const uint region_height = parameters.height - 2u * vertical_border;
+
+    uvec2 sum = uvec2(0u);
+    for (uint segment_index = row_lane;
+         row_index < region_height && segment_index < parameters.segment_count;
+         segment_index += lanes_per_row) {
+        sum = cv_u64_add(
+            sum, load_partial(channel, row_index, segment_index));
+    }
+    segment_sums[local_index] = sum;
+    barrier();
+    // Each lane partition reduces one row; rounding remains per row.
+    for (uint stride = lanes_per_row / 2u; stride > 0u; stride >>= 1u) {
+        if (row_lane < stride) {
+            segment_sums[local_index] = cv_u64_add(
+                segment_sums[local_index],
+                segment_sums[local_index + stride]);
+        }
+        barrier();
+    }
+
+    if (row_lane == 0u && row_index < region_height) {
+#if defined(CROSSVMAF_ADM3_STREAMING_PREFIX)
+        const uint output_index = parameters.packed_row_offset_elements +
+            channel * parameters.packed_row_channel_stride_elements +
+            row_index;
+#else
+        const uint output_index =
+            channel * parameters.row_capacity + row_index;
+#endif
+        row_sums.values[output_index] =
+            apply_row_round_shift(
+                segment_sums[local_index], channel, region_width, region_height);
+    }
+}

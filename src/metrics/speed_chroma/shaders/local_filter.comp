@@ -1,0 +1,65 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer OriginalSamples {
+    uvec2 values[];
+} original_samples;
+layout(set = 0, binding = 1, std430) readonly buffer VerticalMeans {
+    uvec2 values[];
+} vertical_means;
+layout(set = 0, binding = 2, std430) writeonly buffer OutputSamples {
+    uvec2 values[];
+} output_samples;
+
+layout(push_constant) uniform Parameters {
+    uint width;
+    uint height;
+} parameters;
+
+const uint sample_fractional_bits = 20u;
+
+const uint filter_coefficients[3] = uint[3](
+    714590272u, 2865786624u, 714590272u);
+
+int mirror_coordinate(int coordinate, int size) {
+    if (coordinate < 0) return -coordinate;
+    if (coordinate >= size) return 2 * size - coordinate - 2;
+    return coordinate;
+}
+
+void main() {
+    const uint column = gl_GlobalInvocationID.x;
+    const uint row = gl_GlobalInvocationID.y;
+    const uint stream = gl_GlobalInvocationID.z;
+    if (stream >= 4u) return;
+    if (column >= parameters.width || row >= parameters.height) return;
+    const uint stream_element_count = parameters.width * parameters.height;
+    const uint stream_base = stream * stream_element_count;
+    uvec2 mean = uvec2(0u);
+    for (int tap = 0; tap < 3; ++tap) {
+        const int source_column = mirror_coordinate(
+            int(column) - 1 + tap, int(parameters.width));
+        mean = cv_q32_binary32_add(
+            mean,
+            cv_q32_binary32_multiply(
+                vertical_means.values[
+                    stream_base + row * parameters.width +
+                    uint(source_column)],
+                uvec2(filter_coefficients[tap], 0u)));
+    }
+    const uvec2 difference = cv_q32_binary32_subtract(
+        original_samples.values[
+            stream_base + row * parameters.width + column], mean);
+    const int highpass_sample = int(cv_i64_shift_right_rne(
+        difference, 32u - sample_fractional_bits).x);
+    const uint sample_scale =
+        1u << (32u - sample_fractional_bits);
+    output_samples.values[
+        stream_base + row * parameters.width + column] =
+        cv_binary32_quantize(
+            cv_i64_multiply_i32_u32(highpass_sample, sample_scale));
+}

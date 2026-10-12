@@ -1,0 +1,44 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputPartials {
+    uvec4 values[];
+} input_partials;
+layout(set = 0, binding = 1, std430) writeonly buffer OutputPartials {
+    uvec4 values[];
+} output_partials;
+
+layout(push_constant) uniform Parameters {
+    uint input_count;
+    uint partial_offset;
+} parameters;
+
+shared uvec2 sums[256];
+shared uint counts[256];
+
+void main() {
+    const uint index = gl_WorkGroupID.x * 256u + gl_LocalInvocationIndex;
+    const uint local_index = gl_LocalInvocationIndex;
+    const uvec4 value = index < parameters.input_count
+        ? input_partials.values[parameters.partial_offset + index]
+        : uvec4(0u);
+    sums[local_index] = value.xy;
+    counts[local_index] = value.z;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (local_index < stride) {
+            sums[local_index] = cv_u64_add(sums[local_index],
+                                           sums[local_index + stride]);
+            counts[local_index] += counts[local_index + stride];
+        }
+        barrier();
+    }
+    if (local_index == 0u) {
+        output_partials.values[parameters.partial_offset + gl_WorkGroupID.x] =
+            uvec4(sums[0], counts[0], 0u);
+    }
+}

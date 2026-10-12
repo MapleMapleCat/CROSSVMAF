@@ -1,0 +1,172 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer PreviousFrame {
+    uint words[];
+} previous_frame;
+layout(set = 0, binding = 1, std430) readonly buffer CurrentFrame {
+    uint words[];
+} current_frame;
+layout(set = 0, binding = 2, std430) writeonly buffer PartialSums {
+    uvec2 values[];
+} partial_sums;
+
+layout(push_constant) uniform Parameters {
+    uint width;
+    uint height;
+    uint previous_stride_bytes;
+    uint current_stride_bytes;
+    uint bit_depth;
+    uint dispatch_groups_x;
+} parameters;
+
+const uint output_tile_width = 16u;
+const uint filter_radius = 2u;
+const uint source_tile_width = output_tile_width + 2u * filter_radius;
+
+shared int shared_differences[source_tile_width * source_tile_width];
+shared int shared_vertical_differences[output_tile_width * source_tile_width];
+shared uvec2 shared_sums[256];
+
+const uint filter_coefficients[5] = uint[5](3571u, 16004u, 26386u, 16004u, 3571u);
+
+int mirror_coordinate(int coordinate, int size) {
+    if (coordinate < 0) return -coordinate;
+    if (coordinate >= size) return 2 * size - coordinate - 2;
+    return coordinate;
+}
+
+uint load_byte_previous(uint byte_offset) {
+    const uint word = previous_frame.words[byte_offset >> 2u];
+    return (word >> ((byte_offset & 3u) * 8u)) & 0xffu;
+}
+
+uint load_byte_current(uint byte_offset) {
+    const uint word = current_frame.words[byte_offset >> 2u];
+    return (word >> ((byte_offset & 3u) * 8u)) & 0xffu;
+}
+
+uint load_previous(int row, int column) {
+    const uint bytes_per_sample = parameters.bit_depth == 8u ? 1u : 2u;
+    const uint byte_offset = uint(row) * parameters.previous_stride_bytes +
+                             uint(column) * bytes_per_sample;
+    const uint low = load_byte_previous(byte_offset);
+    return bytes_per_sample == 1u
+        ? low
+        : low | (load_byte_previous(byte_offset + 1u) << 8u);
+}
+
+uint load_current(int row, int column) {
+    const uint bytes_per_sample = parameters.bit_depth == 8u ? 1u : 2u;
+    const uint byte_offset = uint(row) * parameters.current_stride_bytes +
+                             uint(column) * bytes_per_sample;
+    const uint low = load_byte_current(byte_offset);
+    return bytes_per_sample == 1u
+        ? low
+        : low | (load_byte_current(byte_offset + 1u) << 8u);
+}
+
+int vertical_difference(uint tile_row, uint tile_column) {
+    uvec2 accumulator = uvec2(0u);
+    for (int tap = 0; tap < 5; ++tap) {
+        const int difference = shared_differences[
+            (tile_row + uint(tap)) * source_tile_width + tile_column];
+        accumulator = cv_u64_add(
+            accumulator,
+            cv_i64_multiply_i32_u32(difference,
+                                    filter_coefficients[uint(tap)]));
+    }
+    accumulator = cv_u64_add(
+        accumulator, uvec2(1u << (parameters.bit_depth - 1u), 0u));
+    return int(cv_i64_arithmetic_shift_right(accumulator,
+                                              parameters.bit_depth).x);
+}
+
+void main() {
+    const uint group_index = gl_WorkGroupID.y * parameters.dispatch_groups_x +
+                             gl_WorkGroupID.x;
+    const uvec2 group_origin = gl_WorkGroupID.xy * output_tile_width;
+    const uint local_index = gl_LocalInvocationIndex;
+    const uint valid_output_width = min(
+        output_tile_width, parameters.width - group_origin.x);
+    const uint valid_output_height = min(
+        output_tile_width, parameters.height - group_origin.y);
+    const uint source_tile_element_count =
+        source_tile_width * source_tile_width;
+    for (uint tile_index = local_index;
+         tile_index < source_tile_element_count;
+         tile_index += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+        const uint tile_row = tile_index / source_tile_width;
+        const uint tile_column = tile_index - tile_row * source_tile_width;
+        if (tile_row < valid_output_height + 2u * filter_radius &&
+            tile_column < valid_output_width + 2u * filter_radius) {
+            const int source_row = mirror_coordinate(
+                int(group_origin.y) + int(tile_row) - int(filter_radius),
+                int(parameters.height));
+            const int source_column = mirror_coordinate(
+                int(group_origin.x) + int(tile_column) - int(filter_radius),
+                int(parameters.width));
+            shared_differences[tile_index] =
+                int(load_previous(source_row, source_column)) -
+                int(load_current(source_row, source_column));
+        } else {
+            shared_differences[tile_index] = 0;
+        }
+    }
+    barrier();
+
+    // Adjacent horizontal outputs reuse the same rounded vertical result.
+    // Keep the intermediate rounding before the horizontal filter unchanged.
+    const uint vertical_tile_element_count =
+        output_tile_width * source_tile_width;
+    for (uint vertical_index = local_index;
+         vertical_index < vertical_tile_element_count;
+         vertical_index += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+        const uint tile_row = vertical_index / source_tile_width;
+        const uint tile_column = vertical_index - tile_row * source_tile_width;
+        if (tile_row < valid_output_height &&
+            tile_column < valid_output_width + 2u * filter_radius) {
+            shared_vertical_differences[vertical_index] =
+                vertical_difference(tile_row, tile_column);
+        }
+    }
+    barrier();
+
+    const uint column = group_origin.x + gl_LocalInvocationID.x;
+    const uint row = group_origin.y + gl_LocalInvocationID.y;
+    uint absolute_difference = 0u;
+    if (column < parameters.width && row < parameters.height) {
+        uvec2 accumulator = uvec2(0u);
+        for (uint tap = 0u; tap < 5u; ++tap) {
+            accumulator = cv_u64_add(
+                accumulator,
+                cv_i64_multiply_i32_u32(
+                    shared_vertical_differences[
+                        gl_LocalInvocationID.y * source_tile_width +
+                        gl_LocalInvocationID.x + tap],
+                    filter_coefficients[tap]));
+        }
+        accumulator = cv_u64_add(accumulator, uvec2(32768u, 0u));
+        const int filtered = int(cv_i64_arithmetic_shift_right(accumulator, 16u).x);
+        absolute_difference = filtered < 0
+            ? uint(-(filtered + 1)) + 1u
+            : uint(filtered);
+    }
+
+    shared_sums[local_index] = uvec2(absolute_difference, 0u);
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (local_index < stride) {
+            shared_sums[local_index] = cv_u64_add(
+                shared_sums[local_index], shared_sums[local_index + stride]);
+        }
+        barrier();
+    }
+    if (local_index == 0u) {
+        partial_sums.values[group_index] = shared_sums[0];
+    }
+}

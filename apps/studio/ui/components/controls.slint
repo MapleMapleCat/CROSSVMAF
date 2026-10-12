@@ -1,0 +1,403 @@
+// Styled building blocks shared by the screens (originally modeled on the
+// since removed docs/ui-fusion/mockup.html).
+import { Theme, Bands } from "../theme.slint";
+
+// .chip — kind: -1 default, 0..3 quality bands, 4 accent.
+export component Chip inherits Rectangle {
+    in property <string> text;
+    in property <int> kind: -1;
+    border-radius: 6px;
+    border-width: 1px;
+    height: 22px;
+    width: lay.preferred-width;
+    background: kind == 4 ? Theme.accent-soft : kind >= 0 ? Bands.bg-of(kind) : Theme.bg3;
+    border-color: kind == 4 ? Theme.accent-line : kind >= 0 ? Bands.line-of(kind) : Theme.stroke2;
+    lay := HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        alignment: center;
+        Text {
+            text: root.text;
+            font-family: Theme.mono-font;
+            font-size: Theme.mono-size;
+            color: kind == 4 ? Theme.accent : kind >= 0 ? Bands.themed-color-of(kind) : Theme.text2;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// .btn — kind: 0 normal, 1 primary, 2 danger, 3 ghost.
+// size: 0 normal, 1 big, 2 h40, 3 run.
+export component SBtn inherits Rectangle {
+    in property <string> text;
+    in property <int> kind: 0;
+    in property <int> size: 0;
+    in property <length> label-font-size: size == 1 ? 14px : size == 3 ? 13.5px : 12.5px;
+    in property <bool> icon-play: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    property <bool> hov: enabled && ta.has-hover;
+    opacity: enabled ? 1 : 0.45;
+    height: size == 1 ? 44px : size >= 2 ? 40px : 35px;
+    width: lay.preferred-width;
+    border-radius: size == 1 ? 9px : 8px;
+    border-width: 1px;
+    background: kind == 1 ? (hov ? Theme.primary-hover : Theme.accent-strong)
+        : kind == 2 ? Theme.poor-bg
+        : hov ? Theme.bg3
+        : kind == 3 ? #00000000 : Theme.bg2;
+    border-color: kind == 1 ? #00000000 : kind == 2 ? Theme.poor-line : Theme.stroke2;
+    animate background { duration: 120ms; }
+    lay := HorizontalLayout {
+        padding-left: size == 1 ? 26px : size == 3 ? 24px : 15px;
+        padding-right: size == 1 ? 26px : size == 3 ? 24px : 15px;
+        spacing: 8px;
+        alignment: center;
+        if root.icon-play: Image {
+            source: @image-url("../icons/play.svg");
+            width: 13px;
+            colorize: kind == 1 ? (hov ? Theme.primary-hover-text : Theme.primary-text) : Theme.text;
+        }
+        Text {
+            text: root.text;
+            font-size: root.label-font-size;
+            font-weight: kind == 1 ? 640 : 520;
+            color: kind == 1 ? (hov ? Theme.primary-hover-text : Theme.primary-text)
+                : kind == 2 ? Theme.poor : Theme.text;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+}
+
+// .seg — segmented control.
+// Compact (mockup uses inline-flex): without horizontal-stretch: 0 the control
+// would stretch to the enclosing layout's full width.
+export component Seg inherits Rectangle {
+    in property <length> label-font-size: 12px;
+    in property <[string]> options;
+    in-out property <int> idx: 0;
+    callback selected(int);
+    height: 35px;
+    width: lay.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.stroke;
+    background: Theme.segment-track;
+    lay := HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+        for o[i] in options: Rectangle {
+            border-radius: 6px;
+            background: i == idx ? Theme.segment-selected : #00000000;
+            border-width: 1px;
+            border-color: i == idx ? Theme.stroke2 : #00000000;
+            animate background, border-color { duration: Theme.selection-transition; easing: ease-out; }
+            // The label must live in a layout: a bare Text with
+            // width: parent.width - 28px creates a binding loop and collapses
+            // the option (and the whole Seg) to zero width.
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                alignment: center;
+                Text {
+                    text: o;
+                    font-size: root.label-font-size;
+                    font-weight: Theme.selection-label-weight;
+                    color: i == idx ? Theme.segment-label : Theme.text2;
+                    animate color { duration: Theme.selection-transition; easing: ease-out; }
+                    vertical-alignment: center;
+                }
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    idx = i;
+                    root.selected(i);
+                }
+            }
+        }
+    }
+}
+
+// Custom styled replacement for the mockup's <select>.
+export component SSelect inherits Rectangle {
+    in property <length> label-font-size: 12.5px;
+    in property <[string]> options;
+    in-out property <int> idx: 0;
+    in property <bool> bare: false; // scene-picker variant: transparent, no border
+    in property <length> min-text-width: 0;
+    callback selected(int);
+    height: 35px;
+    background: bare ? #00000000 : Theme.input-surface;
+    border-width: bare ? 0 : 1px;
+    border-color: Theme.stroke2;
+    border-radius: 8px;
+    HorizontalLayout {
+        padding-left: bare ? 2px : 11px;
+        padding-right: bare ? 2px : 11px;
+        spacing: 8px;
+        Text {
+            text: root.options[root.idx];
+            font-size: root.label-font-size;
+            color: Theme.text;
+            vertical-alignment: center;
+            min-width: root.min-text-width;
+            overflow: elide;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: center;
+            Path {
+                width: 10px;
+                height: 6px;
+                viewbox-width: 10;
+                viewbox-height: 6;
+                commands: "M1 1 L5 5 L9 1";
+                stroke: Theme.text3;
+                stroke-width: 1.5px;
+                stroke-line-cap: round;
+                fill: #00000000;
+            }
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: root.width;
+        height: root.options.length * 30px + 8px;
+        Rectangle {
+            background: Theme.bg2;
+            border-width: 1px;
+            border-color: Theme.stroke2;
+            border-radius: 8px;
+            clip: true;
+            drop-shadow-blur: 12px;
+            drop-shadow-color: Theme.popup-shadow;
+            drop-shadow-offset-y: 4px;
+            VerticalLayout {
+                padding: 4px;
+                for o[i] in root.options: Rectangle {
+                    height: 30px;
+                    border-radius: 6px;
+                    background: !Theme.dark && i == root.idx ? Theme.accent-soft : ota.has-hover ? Theme.bg3 : #00000000;
+                    Text {
+                        text: o;
+                        font-size: root.label-font-size;
+                        color: i == root.idx ? Theme.accent : Theme.text;
+                        x: 10px;
+                        width: parent.width - 20px;
+                        vertical-alignment: center;
+                    }
+                    ota := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.idx = i;
+                            root.selected(i);
+                            popup.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// .toggle — switch with label.
+export component SToggle inherits Rectangle {
+    in-out property <bool> on: true;
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    opacity: enabled ? 1 : 0.5;
+    height: 20px;
+    width: lay.preferred-width;
+    lay := HorizontalLayout {
+        spacing: 11px;
+        Rectangle {
+            width: 36px;
+            height: 20px;
+            border-radius: 10px;
+            background: root.on ? Theme.toggle-on : Theme.bg3;
+            border-width: 1px;
+            border-color: root.on ? Theme.accent : Theme.stroke2;
+            animate background { duration: 150ms; }
+            animate border-color { duration: 150ms; }
+            Rectangle {
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                y: 2px;
+                x: root.on ? 19px : 3px;
+                background: root.on ? Theme.toggle-thumb : Theme.text3;
+                animate x { duration: 150ms; }
+                animate background { duration: 150ms; }
+            }
+        }
+        Text {
+            text: root.label;
+            font-size: 12.5px;
+            color: Theme.text;
+            vertical-alignment: center;
+        }
+    }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if (root.enabled) {
+                root.on = !root.on;
+                root.toggled(root.on);
+            }
+        }
+    }
+}
+
+// .pbar progress bar
+export component PBar inherits Rectangle {
+    in property <float> frac: 0;
+    // Fill of the completed portion; a brush so callers can pass a gradient.
+    in property <brush> fill: Theme.accent;
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.bg3;
+    clip: true;
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width * clamp(frac, 0, 1);
+        height: 100%;
+        border-radius: 3px;
+        background: root.fill;
+        animate width { duration: 200ms; easing: linear; }
+    }
+}
+
+export component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <string> accessible-name: text;
+    in property <image> icon;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> link: false;
+    in property <bool> tight: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    forward-focus: key;
+    accessible-role: button;
+    accessible-label: accessible-name;
+    accessible-enabled: enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    height: 40px;
+    width: lay.preferred-width;
+    border-radius: 8px;
+    border-width: link && !key.has-focus ? 0px : 1px;
+    border-color: key.has-focus ? Theme.accent : primary ? transparent : Theme.stroke2;
+    background: primary ? (ta.has-hover && enabled ? Theme.primary-hover : Theme.accent-strong)
+        : danger ? (ta.has-hover && enabled ? Theme.poor-bg : transparent)
+        : ta.has-hover && enabled ? Theme.bg3 : link ? transparent : Theme.bg2;
+    opacity: enabled ? 1 : 0.45;
+    animate background { duration: 120ms; }
+    lay := HorizontalLayout {
+        padding-left: root.tight ? 4px : root.link ? 8px : 17px;
+        padding-right: root.tight ? 4px : root.link ? 8px : 17px;
+        spacing: 8px;
+        alignment: center;
+        if root.icon.width > 0: VerticalLayout {
+            width: 17px;
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: 17px;
+                height: 17px;
+                colorize: root.primary ? Theme.primary-text : root.danger ? Theme.poor : root.link ? Theme.accent : Theme.text;
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: 13px;
+            font-weight: root.primary ? 600 : 500;
+            color: root.primary ? Theme.primary-text : root.danger ? Theme.poor : root.link ? Theme.accent : Theme.text;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    key := FocusScope {
+        width: 0px; // Keyboard focus must not intercept the pointer hit area.
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+}
+
+// Text-only action, styled like the report's "Show →" links.
+export component LinkButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    accessible-role: button;
+    accessible-label: text;
+    accessible-enabled: enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    horizontal-stretch: 0;
+    width: label.preferred-width + 12px;
+    height: 28px;
+    border-radius: 6px;
+    background: ta.has-hover && enabled ? Theme.bg3 : transparent;
+    opacity: enabled ? 1 : 0.45;
+    label := Text {
+        width: 100%;
+        height: 100%;
+        text: root.text;
+        font-size: 11.5px;
+        color: Theme.accent;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    callback clicked();
+    accessible-role: button;
+    accessible-label: label;
+    accessible-action-default => { root.clicked(); }
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: ta.has-hover ? Theme.bg3 : transparent;
+    Image {
+        source: root.icon;
+        width: 14px;
+        colorize: ta.has-hover ? Theme.text : Theme.text3;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}

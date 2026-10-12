@@ -1,0 +1,176 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+#ifndef CROSSVMAF_SPEED_CHROMA_IDENTITY_SCALE
+#define CROSSVMAF_SPEED_CHROMA_IDENTITY_SCALE 0
+#endif
+
+#ifndef CROSSVMAF_SPEED_CHROMA_IDENTITY_PRODUCTS
+#define CROSSVMAF_SPEED_CHROMA_IDENTITY_PRODUCTS 0
+#endif
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#if CROSSVMAF_SPEED_CHROMA_IDENTITY_PRODUCTS
+layout(set = 0, binding = 6, std430) readonly buffer AntialiasProducts {
+    uvec2 values[];
+} antialias_products;
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_IDENTITY_SCALE
+layout(set = 0, binding = 4, std430) writeonly buffer DecimatedSamples {
+    uvec2 values[];
+} decimated_samples;
+#else
+layout(set = 0, binding = 0, std430) readonly buffer ScaledSamples {
+    uvec2 values[];
+} scaled_samples;
+layout(set = 0, binding = 1, std430) writeonly buffer DecimatedSamples {
+    uvec2 values[];
+} decimated_samples;
+#endif
+
+layout(push_constant) uniform Parameters {
+    uint scaled_width;
+    uint scaled_height;
+    uint operating_width;
+    uint operating_height;
+    uint source_stride_bytes_0;
+    uint source_stride_bytes_1;
+    uint source_stride_bytes_2;
+    uint source_stride_bytes_3;
+    uint bit_depth;
+} parameters;
+
+#if CROSSVMAF_SPEED_CHROMA_IDENTITY_SCALE
+#include "sampling.glsl"
+
+void validate_identity_source_tile() {
+    // Every stored 8/16-bit value is representable. Narrower 16-bit formats
+    // still validate the entire source, not just the sparse filter taps.
+    if (parameters.bit_depth == 8u || parameters.bit_depth == 16u) return;
+    const uint source_columns_per_group = 16u * 16u;
+    const uint first_column = gl_WorkGroupID.x * source_columns_per_group;
+    const uint end_column = gl_WorkGroupID.x + 1u == gl_NumWorkGroups.x
+        ? parameters.scaled_width
+        : first_column + source_columns_per_group;
+    const uint first_row = gl_WorkGroupID.y * 16u;
+    const uint end_row = gl_WorkGroupID.y + 1u == parameters.operating_height
+        ? parameters.scaled_height
+        : first_row + 16u;
+    // The last groups also own the remainder discarded by 16x decimation.
+    for (uint source_row = first_row; source_row < end_row; ++source_row) {
+        for (uint source_column = first_column + gl_LocalInvocationIndex;
+             source_column < end_column;
+             source_column += source_columns_per_group) {
+            validate_source_sample(source_row, source_column);
+        }
+    }
+}
+#endif
+
+const uint filter_coefficients[9] = uint[9](
+    324909248u, 425645824u, 516207552u, 579548672u, 602344640u,
+    579548672u, 516207552u, 425645824u, 324909248u);
+
+const uint output_columns_per_group = 16u;
+const uint horizontal_tap_count = 9u;
+
+shared uvec2 staged_vertical_values[
+    output_columns_per_group * horizontal_tap_count];
+
+int mirror_coordinate(int coordinate, int size) {
+    if (coordinate < 0) return -coordinate;
+    if (coordinate >= size) return 2 * size - coordinate - 2;
+    return coordinate;
+}
+
+uvec2 filter_vertical(uint input_stream_base, uint source_row,
+                      uint source_column) {
+    uvec2 vertical_accumulator = uvec2(0u);
+    for (int vertical_tap = 0; vertical_tap < 9; ++vertical_tap) {
+        const int row_index = mirror_coordinate(
+            int(source_row) - 4 + vertical_tap,
+            int(parameters.scaled_height));
+#if CROSSVMAF_SPEED_CHROMA_IDENTITY_PRODUCTS
+        const uint source_value = load_byte(
+            uint(row_index) * source_stride_bytes(gl_GlobalInvocationID.z) +
+            source_column);
+        const uint coefficient_index = uint(min(vertical_tap, 8 - vertical_tap));
+        const uvec2 weighted_sample = antialias_products.values[
+            coefficient_index * 256u + source_value];
+#else
+#if CROSSVMAF_SPEED_CHROMA_IDENTITY_SCALE
+        const uvec2 sample_value = cv_binary32_quantize(
+            sample_q32(load_normalized(uint(row_index), source_column)));
+#else
+        const uvec2 sample_value = scaled_samples.values[
+            input_stream_base +
+            uint(row_index) * parameters.scaled_width + source_column];
+#endif
+        const uvec2 weighted_sample = cv_q32_binary32_multiply(
+            sample_value, uvec2(filter_coefficients[vertical_tap], 0u));
+#endif
+        vertical_accumulator = cv_q32_binary32_add(
+            vertical_accumulator, weighted_sample);
+    }
+    return vertical_accumulator;
+}
+
+void main() {
+#if CROSSVMAF_SPEED_CHROMA_IDENTITY_SCALE
+    validate_identity_source_tile();
+#endif
+    const uint horizontal_tap = gl_LocalInvocationID.x;
+    const uint local_output_column = gl_LocalInvocationID.y;
+    const uint column =
+        gl_WorkGroupID.x * output_columns_per_group + local_output_column;
+    const uint row = gl_WorkGroupID.y;
+    const uint stream = gl_WorkGroupID.z;
+    const bool output_is_valid = stream < 4u &&
+        column < parameters.operating_width &&
+        row < parameters.operating_height;
+    const uint sampled_output_column = min(
+        column, parameters.operating_width - 1u);
+
+    const uint input_stream_element_count =
+        parameters.scaled_width * parameters.scaled_height;
+    const uint output_stream_element_count =
+        parameters.operating_width * parameters.operating_height;
+    const uint input_stream_base = stream * input_stream_element_count;
+    const uint output_stream_base = stream * output_stream_element_count;
+    const uint source_row = row * 16u;
+    const int source_column = int(sampled_output_column * 16u);
+
+    if (horizontal_tap < horizontal_tap_count) {
+        const int column_index = mirror_coordinate(
+            source_column - 4 + int(horizontal_tap),
+            int(parameters.scaled_width));
+        const uvec2 vertical_value = filter_vertical(
+            input_stream_base, source_row, uint(column_index));
+        staged_vertical_values[
+            local_output_column * horizontal_tap_count + horizontal_tap] =
+                vertical_value;
+    }
+    barrier();
+
+    if (horizontal_tap != 0u || !output_is_valid) return;
+
+    uvec2 horizontal_accumulator = uvec2(0u);
+    for (uint staged_tap = 0u; staged_tap < horizontal_tap_count;
+         ++staged_tap) {
+        const uvec2 vertical_value = staged_vertical_values[
+            local_output_column * horizontal_tap_count + staged_tap];
+        horizontal_accumulator = cv_q32_binary32_add(
+            horizontal_accumulator,
+            cv_q32_binary32_multiply(
+                vertical_value,
+                uvec2(filter_coefficients[staged_tap], 0u)));
+    }
+
+    decimated_samples.values[
+        output_stream_base + row * parameters.operating_width + column] =
+            horizontal_accumulator;
+}

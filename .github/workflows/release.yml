@@ -1,0 +1,180 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and publish (for example, v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: '4'
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    name: Build Windows x64
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - name: Validate tag and prepare checkout
+        run: |
+          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$') {
+            throw 'Use a version tag such as v0.1.0 or v0.1.0-rc.1.'
+          }
+          git config --global core.longpaths true
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot enable long Git paths.' }
+          git config --global core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot preserve source line endings.' }
+
+      - name: Check out the release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Check software version
+        run: |
+          $source = Get-Content -LiteralPath CMakeLists.txt -Raw
+          $version = [regex]::Match($source, '(?s)project\(\s*CrossVMAF\s+VERSION\s+(\d+\.\d+\.\d+)')
+          $tagVersion = ($env:RELEASE_TAG.Substring(1) -split '-', 2)[0]
+          if (-not $version.Success -or $version.Groups[1].Value -ne $tagVersion) {
+            throw 'The tag version must match project(VERSION) in CMakeLists.txt.'
+          }
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+
+      - name: Install build tools
+        run: |
+          python -m pip install 'meson>=1.3,<2' 'ninja>=1.11,<2'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot install Meson and Ninja.' }
+          choco install nasm --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot install NASM.' }
+          rustup toolchain install 1.92.0-x86_64-pc-windows-msvc --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot install the Rust MSVC toolchain.' }
+          'RUSTUP_TOOLCHAIN=1.92.0-x86_64-pc-windows-msvc' >> $env:GITHUB_ENV
+
+          # The Windows runner supplies LLVM, Visual Studio, the SDK, and Git Bash.
+          $llvmBin = Join-Path $env:ProgramFiles 'LLVM/bin'
+          foreach ($tool in @('clang-cl', 'lld-link', 'llvm-lib', 'llvm-rc', 'llvm-mt', 'llvm-readobj')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $llvmBin "$tool.exe"))) {
+              throw "Missing LLVM tool: $tool"
+            }
+          }
+          $llvmBin >> $env:GITHUB_PATH
+          (Join-Path $env:ProgramFiles 'NASM') >> $env:GITHUB_PATH
+
+      - name: Configure Release
+        run: |
+          cmake --preset windows-release -DCROSSVMAF_BUILD_STUDIO=ON -DCROSSVMAF_ENABLE_VULKAN_VIDEO=ON -DCROSSVMAF_ENABLE_VAAPI=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
+
+      - name: Build applications and verify runtime dependencies
+        run: |
+          cmake --build --preset windows-release --target crossvmaf_package --parallel 4
+          if ($LASTEXITCODE -ne 0) { throw 'The Release build or runtime package validation failed.' }
+
+      - name: Create release assets
+        run: ./.github/scripts/package-release.ps1
+
+      - name: Save release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-windows-x64
+          path: build/release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Save build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-windows-x64-logs
+          path: |
+            build/windows-release/CMakeFiles/CMakeConfigureLog.yaml
+            build/windows-release/*.log
+            build/windows-release/_deps/crossvmaf-ffmpeg-config/ffbuild/config.log
+            build/windows-release/_deps/crossvmaf-dav1d/Release/meson-logs/meson-log.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-windows-x64
+          path: release-assets
+
+      - name: Publish assets for the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assetDirectory = Join-Path $env:GITHUB_WORKSPACE 'release-assets'
+          $archiveName = "CrossVMAF-$env:RELEASE_TAG-windows-x64.zip"
+          $archive = Join-Path $assetDirectory $archiveName
+          $checksums = Join-Path $assetDirectory 'SHA256SUMS.txt'
+          $notes = Join-Path $assetDirectory 'release-notes.md'
+          $expected = "{0}  {1}" -f (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant(), $archiveName
+          if ((Get-Content -LiteralPath $checksums -Raw).Trim() -cne $expected) {
+            throw 'The downloaded archive does not match its checksum.'
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+          }
+          $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG"
+          $response = Invoke-WebRequest -Uri $uri -Headers $headers -SkipHttpErrorCheck
+          if ($response.StatusCode -eq 404) {
+            # Upload everything before publishing, including on repositories with immutable releases.
+            $arguments = @('release', 'create', $env:RELEASE_TAG, '--repo', $env:GITHUB_REPOSITORY,
+              '--verify-tag', '--draft', '--title', "CrossVMAF $env:RELEASE_TAG", '--notes-file', $notes, '--generate-notes')
+            if ($env:RELEASE_TAG.Contains('-')) { $arguments += @('--prerelease', '--latest=false') }
+            gh @arguments
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot create the draft release.' }
+            $publishDraft = $true
+          } elseif ($response.StatusCode -eq 200) {
+            $release = $response.Content | ConvertFrom-Json
+            if ($release.immutable) {
+              throw 'This release is immutable. Publish a new version tag instead of replacing its assets.'
+            }
+            $publishDraft = $release.draft
+          } else {
+            throw "Cannot look up the release (HTTP $($response.StatusCode))."
+          }
+
+          gh release upload $env:RELEASE_TAG $archive $checksums --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot upload release assets.' }
+          if ($publishDraft) {
+            gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot publish the release.' }
+          }

@@ -1,0 +1,53 @@
+# CrossVMAF FFmpeg ABI 1. Reviewed functions only; no patterns or data exports.
+# Production decoding, frame ownership, hardware contexts and metadata.
+av_buffer_create
+av_buffer_ref
+av_buffer_unref
+av_cpu_count
+av_dict_free
+av_dict_set
+av_find_best_stream
+av_frame_alloc
+av_frame_apply_cropping
+av_frame_clone
+av_frame_copy_props
+av_frame_free
+av_frame_unref
+av_hwdevice_ctx_alloc
+av_hwdevice_ctx_create
+av_hwdevice_ctx_create_derived
+av_hwdevice_ctx_init
+av_hwframe_ctx_alloc
+av_hwframe_ctx_create_derived
+av_hwframe_ctx_init
+av_hwframe_get_buffer
+av_hwframe_map
+av_hwframe_transfer_data
+# Diagnostics and decoded-pixel verification use the production DLL.
+av_log_get_level
+av_log_set_level
+av_md5_sum
+av_packet_alloc
+av_packet_free
+av_packet_unref
+av_pix_fmt_desc_get
+av_read_frame
+av_strerror
+avcodec_alloc_context3
+avcodec_find_decoder
+avcodec_find_decoder_by_name
+avcodec_free_context
+avcodec_get_hw_config
+avcodec_get_name
+avcodec_open2
+avcodec_parameters_to_context
+avcodec_receive_frame
+avcodec_send_packet
+# Version checks are required before allocating native objects.
+avcodec_version
+avformat_alloc_context
+avformat_close_input
+avformat_find_stream_info
+avformat_open_input
+avformat_version
+avutil_version

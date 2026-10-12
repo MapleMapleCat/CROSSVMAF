@@ -1,0 +1,345 @@
+// Chart components. All geometry arrives from C++ in viewbox units and is
+// scaled here by sx = width / viewbox-width, mirroring the SVG viewBox
+// behaviour of the mockup.
+import { Theme, Bands, SeriesPalette } from "../theme.slint";
+import {
+    ZoneRect,
+    SegLine,
+    AxisLabel,
+    GuideLine,
+    SeriesPath,
+    HeatCell,
+    MarkerDot,
+    HistoBar,
+    RdPoint,
+} from "../models/chart_types.slint";
+
+export component LineChart inherits Rectangle {
+    in property <float> vbw: 1160;
+    in property <float> vbh: 280;
+    in property <length> chart-w: 1000px;
+    in property <[ZoneRect]> zones: [];
+    in property <[SegLine]> grid: [];
+    in property <[SegLine]> vgrid: [];
+    in property <[AxisLabel]> ylabels: [];
+    in property <[AxisLabel]> xlabels: [];
+    in property <[GuideLine]> guides: [];
+    in property <[SeriesPath]> series: [];
+    in property <[MarkerDot]> markers: [];
+    in property <bool> live-dot-visible: false;
+    in property <float> live-dot-x: 0;
+    in property <float> live-dot-y: 0;
+    in property <float> pulse: 0; // 0..1 halo animation phase
+    out property <length> sx: chart-w / vbw;
+    width: chart-w;
+    height: sx * vbh;
+
+    for z in zones: Rectangle {
+        x: z.x * sx;
+        y: z.y * sx;
+        width: z.w * sx;
+        height: z.h * sx;
+        background: Bands.zone-of(z.quality-kind);
+    }
+    for g in grid: Rectangle {
+        x: g.x1 * sx;
+        y: g.y1 * sx;
+        width: (g.x2 - g.x1) * sx;
+        height: 1px;
+        background: Theme.stroke;
+    }
+    for g in vgrid: Rectangle {
+        x: g.x1 * sx;
+        y: g.y1 * sx;
+        width: 1px;
+        height: (g.y2 - g.y1) * sx;
+        background: Theme.stroke;
+        opacity: 0.55;
+    }
+    for g in guides: Path {
+        commands: g.dash-path;
+        stroke: Bands.color-of(g.quality-kind);
+        stroke-width: 1px;
+        opacity: 0.8;
+        fill: #00000000;
+        viewbox-width: vbw;
+        viewbox-height: vbh;
+        width: 100%;
+        height: 100%;
+    }
+    for g in guides: Text {
+        text: g.label;
+        color: Bands.color-of(g.quality-kind);
+        font-family: Theme.mono-font;
+        font-size: 10 * sx;
+        x: g.label-x * sx - self.preferred-width;
+        y: g.label-y * sx - self.preferred-height / 2;
+    }
+    for l in ylabels: Text {
+        text: l.text;
+        color: Theme.text3;
+        font-family: Theme.mono-font;
+        font-size: 10 * sx;
+        x: l.x * sx - (l.anchor == 2 ? self.preferred-width : l.anchor == 1 ? self.preferred-width / 2 : 0);
+        y: l.y * sx - self.preferred-height / 2;
+    }
+    for l in xlabels: Text {
+        text: l.text;
+        color: Theme.text3;
+        font-family: Theme.mono-font;
+        font-size: 10 * sx;
+        x: l.x * sx - (l.anchor == 2 ? self.preferred-width : l.anchor == 1 ? self.preferred-width / 2 : 0);
+        y: l.y * sx - self.preferred-height / 2;
+    }
+    for s in series: Path {
+        visible: s.visible;
+        commands: s.path;
+        stroke: s.use-accent ? Theme.accent : s.slot > 0 ? SeriesPalette.color-of(s.slot) : s.color;
+        stroke-width: s.width * 1px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        fill: #00000000;
+        opacity: s.opacity;
+        viewbox-width: vbw;
+        viewbox-height: vbh;
+        width: 100%;
+        height: 100%;
+    }
+    for m in markers: Rectangle {
+        width: 6.8 * sx;
+        height: 6.8 * sx;
+        border-radius: 3.4 * sx;
+        background: Theme.band-poor;
+        border-width: 1px;
+        border-color: Theme.marker-stroke;
+        x: m.x * sx - 3.4 * sx;
+        y: m.y * sx - 3.4 * sx;
+    }
+    if live-dot-visible: Rectangle {
+        width: 2 * (4px + 6px * pulse);
+        height: 2 * (4px + 6px * pulse);
+        border-radius: (4px + 6px * pulse);
+        border-width: 1.5px;
+        border-color: Theme.accent;
+        background: #00000000;
+        opacity: 0.8 * (1 - pulse);
+        x: live-dot-x * sx - self.width / 2;
+        y: live-dot-y * sx - self.height / 2;
+    }
+    if live-dot-visible: Rectangle {
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.accent;
+        x: live-dot-x * sx - 3px;
+        y: live-dot-y * sx - 3px;
+    }
+}
+
+export component HeatStrip inherits Rectangle {
+    in property <float> vbw: 1160;
+    in property <length> chart-w: 1000px;
+    in property <[HeatCell]> cells: [];
+    in property <float> progress-frac: 1;
+    in property <float> frame-w: 0;
+    in property <float> margin-l: 44;
+    in property <float> margin-r: 14;
+    in property <bool> cursor-visible: false;
+    in property <float> cursor-x: 0;
+    out property <length> sx: chart-w / vbw;
+    width: chart-w;
+    height: 22 * sx;
+
+    if progress-frac < 1: Rectangle {
+        x: margin-l * sx;
+        y: 4 * sx;
+        width: (vbw - margin-l - margin-r) * sx;
+        height: 12 * sx;
+        border-radius: 3 * sx;
+        background: Theme.bg1;
+        border-width: 1px;
+        border-color: Theme.stroke;
+    }
+    for c in cells: Rectangle {
+        x: c.x * sx;
+        y: 4 * sx;
+        width: c.w * sx;
+        height: 12 * sx;
+        background: c.color;
+        opacity: 0.9;
+    }
+    Rectangle {
+        x: margin-l * sx;
+        y: 4 * sx;
+        width: frame-w * sx;
+        height: 12 * sx;
+        border-radius: 3 * sx;
+        border-width: 1px;
+        border-color: Theme.strip-frame;
+        background: #00000000;
+    }
+    if cursor-visible: Rectangle {
+        x: cursor-x * sx;
+        y: 2 * sx;
+        width: 1px;
+        height: 16 * sx;
+        background: Theme.text2;
+        opacity: 0.8;
+    }
+}
+
+export component HistoChart inherits Rectangle {
+    in property <length> chart-w: 500px;
+    in property <length> chart-h: 160px;
+    in property <[HistoBar]> bars: [];
+    in property <[AxisLabel]> labels: [];
+    out property <length> sx: chart-w / 560;
+    out property <length> sy: self.height / 180;
+    width: chart-w;
+    height: chart-h;
+
+    for b in bars: Rectangle {
+        x: b.x * sx;
+        y: b.y * sy;
+        width: b.w * sx;
+        height: b.h * sy;
+        border-radius: 2 * sx;
+        background: Bands.color-of(b.quality-kind);
+        opacity: 0.85;
+    }
+    for l in labels: Text {
+        text: l.text;
+        color: Theme.text3;
+        font-family: Theme.mono-font;
+        font-size: 10px;
+        x: l.x * sx - self.preferred-width / 2;
+        y: l.y * sy - self.preferred-height / 2;
+    }
+}
+
+export component RdChart inherits Rectangle {
+    in property <length> chart-w: 500px;
+    in property <[SegLine]> grid: [];
+    in property <[AxisLabel]> ylabels: [];
+    in property <[AxisLabel]> xlabels: [];
+    in property <string> guide-dash;
+    in property <string> guide-label;
+    in property <float> guide-lx: 0;
+    in property <float> guide-ly: 0;
+    in property <string> line-dash;
+    in property <[RdPoint]> points: [];
+    out property <length> sx: chart-w / 560;
+    // Axis text stays legible when the half-width card is narrow.
+    property <length> label-size: max(9px, 10 * sx);
+    width: chart-w;
+    height: 240 * sx;
+
+    for g in grid: Rectangle {
+        x: g.x1 * sx;
+        y: g.y1 * sx;
+        width: (g.x2 - g.x1) * sx;
+        height: 1px;
+        background: Theme.stroke;
+    }
+    for l in ylabels: Text {
+        text: l.text;
+        color: Theme.text3;
+        font-family: Theme.mono-font;
+        font-size: label-size;
+        x: l.x * sx - self.preferred-width;
+        y: l.y * sx - self.preferred-height / 2;
+    }
+    for l in xlabels: Text {
+        text: l.text;
+        color: Theme.text3;
+        font-family: Theme.mono-font;
+        font-size: label-size;
+        x: l.x * sx - (l.anchor == 2 ? self.preferred-width : l.anchor == 1 ? self.preferred-width / 2 : 0);
+        y: l.y * sx - self.preferred-height / 2;
+    }
+    Path {
+        commands: guide-dash;
+        stroke: Theme.band-excellent;
+        stroke-width: 1px;
+        opacity: 0.8;
+        fill: #00000000;
+        viewbox-width: 560;
+        viewbox-height: 240;
+        width: 100%;
+        height: 100%;
+    }
+    Text {
+        text: guide-label;
+        color: Theme.band-excellent;
+        font-family: Theme.mono-font;
+        font-size: label-size;
+        x: guide-lx * sx - self.preferred-width;
+        y: guide-ly * sx - self.preferred-height / 2;
+    }
+    Path {
+        commands: line-dash;
+        stroke: Theme.text3;
+        stroke-width: 1.2px;
+        fill: #00000000;
+        viewbox-width: 560;
+        viewbox-height: 240;
+        width: 100%;
+        height: 100%;
+    }
+    for p in points: Rectangle {
+        visible: p.sweet;
+        width: 20px;
+        height: 20px;
+        border-radius: 10px;
+        border-width: 1.5px;
+        border-color: SeriesPalette.color-of(p.slot);
+        background: #00000000;
+        x: p.x * sx - 10px;
+        y: p.y * sx - 10px;
+    }
+    // 10px markers with a 2px surface ring, so overlapping points stay apart.
+    for p in points: Rectangle {
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        background: SeriesPalette.color-of(p.slot);
+        border-width: 2px;
+        border-color: Theme.bg2;
+        x: p.x * sx - 5px;
+        y: p.y * sx - 5px;
+    }
+    for p in points: Text {
+        text: p.value-label;
+        color: Theme.text2;
+        font-family: Theme.mono-font;
+        font-size: label-size;
+        x: p.x * sx - self.preferred-width / 2;
+        y: p.y * sx - 13px - self.preferred-height / 2;
+    }
+}
+
+// Small dashed line swatch used in chart legends (.lline).
+// horizontal-stretch: 0 keeps legend rows compact: a BoxLayout reports the
+// SUM of its children's stretch factors to its parent, and Rectangle defaults
+// to 1, which otherwise spreads legend items across the card header.
+export component LegendLine inherits Rectangle {
+    in property <color> line-color: Theme.band-excellent;
+    width: 16px;
+    height: 6px;
+    horizontal-stretch: 0;
+    for i in [0, 1, 2]: Rectangle {
+        x: i * 6px;
+        y: 2px;
+        width: 4px;
+        height: 2px;
+        background: line-color;
+    }
+}
+
+// Legend dot (.ldot). See LegendLine for why horizontal-stretch is pinned.
+export component LegendDotShape inherits Rectangle {
+    width: 9px;
+    height: 9px;
+    border-radius: 4.5px;
+    horizontal-stretch: 0;
+}

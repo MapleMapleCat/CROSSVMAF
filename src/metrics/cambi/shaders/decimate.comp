@@ -1,0 +1,40 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputValues {
+    uint values[];
+} input_values;
+layout(set = 0, binding = 1, std430) writeonly buffer OutputValues {
+    uint values[];
+} output_values;
+layout(set = 0, binding = 2, std430) readonly buffer InputMask {
+    uint values[];
+} input_mask;
+layout(set = 0, binding = 3, std430) writeonly buffer OutputMask {
+    uint values[];
+} output_mask;
+
+layout(push_constant) uniform Parameters {
+    uint input_width;
+    uint output_width;
+    uint output_height;
+} parameters;
+
+const uint luma_value_mask = 0x7fffffffu;
+
+void main() {
+    const uint column = gl_GlobalInvocationID.x;
+    const uint row = gl_GlobalInvocationID.y;
+    if (column >= parameters.output_width || row >= parameters.output_height) {
+        return;
+    }
+    const uint source_index =
+        (row * 2u) * parameters.input_width + column * 2u;
+    const uint destination_index = row * parameters.output_width + column;
+    output_values.values[destination_index] =
+        input_values.values[source_index] & luma_value_mask;
+    output_mask.values[destination_index] =
+        input_mask.values[source_index] & luma_value_mask;
+}

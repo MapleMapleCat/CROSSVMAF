@@ -1,0 +1,236 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputPlane {
+    uint words[];
+} input_plane;
+layout(set = 0, binding = 1, std430) writeonly buffer OutputLow {
+    uint values[];
+} output_low;
+layout(set = 0, binding = 2, std430) writeonly buffer OutputDetail {
+    uint values[];
+} output_detail;
+
+layout(push_constant) uniform Parameters {
+    uint input_width;
+    uint input_height;
+    uint input_stride_bytes;
+    uint output_width;
+    uint output_height;
+    uint bit_depth;
+    uint scale;
+    uint raw_input;
+} parameters;
+
+const int filter_low[4] = int[4](15826, 27411, 7345, -4240);
+const int filter_high[4] = int[4](-4240, -7345, 27411, -15826);
+const uint output_tile_width = 16u;
+const uint source_tile_width = output_tile_width * 2u + 2u;
+
+shared int source_tile[source_tile_width * source_tile_width];
+shared ivec2 vertical_tile[output_tile_width * source_tile_width];
+
+int mirror_coordinate(int coordinate, int size) {
+    if (coordinate < 0) return -coordinate;
+    if (coordinate >= size) return 2 * size - coordinate - 1;
+    return coordinate;
+}
+
+uint load_byte(uint byte_offset) {
+    const uint word = input_plane.words[byte_offset >> 2u];
+    return (word >> ((byte_offset & 3u) * 8u)) & 0xffu;
+}
+
+int load_value(int row, int column) {
+    if (parameters.raw_input == 0u) {
+        return int(input_plane.words[
+            uint(row) * parameters.input_width + uint(column)]);
+    }
+    const uint bytes_per_sample = parameters.bit_depth == 8u ? 1u : 2u;
+    const uint byte_offset = uint(row) * parameters.input_stride_bytes +
+                             uint(column) * bytes_per_sample;
+    const uint low = load_byte(byte_offset);
+    return int(bytes_per_sample == 1u
+        ? low
+        : low | (load_byte(byte_offset + 1u) << 8u));
+}
+
+int wrap_i16(int value) {
+    const uint bits = uint(value) & 0xffffu;
+    return int((bits ^ 0x8000u)) - 32768;
+}
+
+ivec2 vertical_filter_pair(uint local_output_row, uint tile_source_column) {
+    uvec2 low_accumulator = uvec2(0u);
+    uvec2 high_accumulator = uvec2(0u);
+    for (uint tap = 0u; tap < 4u; ++tap) {
+        const uint tile_source_row = local_output_row * 2u + tap;
+        const int source_value = source_tile[
+            tile_source_row * source_tile_width + tile_source_column];
+        low_accumulator = cv_u64_add(
+            low_accumulator,
+            cv_i64_multiply_i32(filter_low[tap], source_value));
+        high_accumulator = cv_u64_add(
+            high_accumulator,
+            cv_i64_multiply_i32(filter_high[tap], source_value));
+    }
+
+    uint shift;
+    int rounding;
+    if (parameters.scale == 0u) {
+        const int center = 1 << (parameters.bit_depth - 1u);
+        low_accumulator = cv_u64_add(
+            low_accumulator,
+            cv_i64_from_i32(-46342 * center));
+        shift = parameters.bit_depth;
+        rounding = center;
+    } else if (parameters.scale == 1u) {
+        shift = 0u;
+        rounding = 0;
+    } else {
+        shift = 16u;
+        rounding = 32768;
+    }
+    low_accumulator = cv_u64_add(
+        low_accumulator, cv_i64_from_i32(rounding));
+    high_accumulator = cv_u64_add(
+        high_accumulator, cv_i64_from_i32(rounding));
+    int low_result = int(
+        cv_i64_arithmetic_shift_right(low_accumulator, shift).x);
+    int high_result = int(
+        cv_i64_arithmetic_shift_right(high_accumulator, shift).x);
+    if (parameters.scale == 0u) {
+        low_result = wrap_i16(low_result);
+        high_result = wrap_i16(high_result);
+    }
+    return ivec2(low_result, high_result);
+}
+
+int finalize_horizontal_filter(uvec2 accumulator) {
+    uint shift;
+    int rounding;
+    if (parameters.scale == 0u) {
+        shift = 16u;
+        rounding = 32768;
+    } else if (parameters.scale == 2u) {
+        shift = 16u;
+        rounding = 32768;
+    } else {
+        shift = 15u;
+        rounding = 16384;
+    }
+    accumulator = cv_u64_add(accumulator, cv_i64_from_i32(rounding));
+    const int result = int(cv_i64_arithmetic_shift_right(accumulator, shift).x);
+    return parameters.scale == 0u ? wrap_i16(result) : result;
+}
+
+struct DwtOutput {
+    int low;
+    int vertical_detail;
+    int horizontal_detail;
+    int diagonal_detail;
+};
+
+DwtOutput filter_output(uint local_output_row, uint local_output_column) {
+    uvec2 low_accumulator = uvec2(0u);
+    uvec2 vertical_detail_accumulator = uvec2(0u);
+    uvec2 horizontal_detail_accumulator = uvec2(0u);
+    uvec2 diagonal_detail_accumulator = uvec2(0u);
+    for (uint tap = 0u; tap < 4u; ++tap) {
+        const uint tile_source_column = local_output_column * 2u + tap;
+        const ivec2 vertical_values = vertical_tile[
+            local_output_row * source_tile_width + tile_source_column];
+        low_accumulator = cv_u64_add(
+            low_accumulator,
+            cv_i64_multiply_i32(filter_low[tap], vertical_values.x));
+        vertical_detail_accumulator = cv_u64_add(
+            vertical_detail_accumulator,
+            cv_i64_multiply_i32(filter_low[tap], vertical_values.y));
+        horizontal_detail_accumulator = cv_u64_add(
+            horizontal_detail_accumulator,
+            cv_i64_multiply_i32(filter_high[tap], vertical_values.x));
+        diagonal_detail_accumulator = cv_u64_add(
+            diagonal_detail_accumulator,
+            cv_i64_multiply_i32(filter_high[tap], vertical_values.y));
+    }
+
+    DwtOutput output_value;
+    output_value.low = finalize_horizontal_filter(low_accumulator);
+    output_value.vertical_detail = finalize_horizontal_filter(
+        vertical_detail_accumulator);
+    output_value.horizontal_detail = finalize_horizontal_filter(
+        horizontal_detail_accumulator);
+    output_value.diagonal_detail = finalize_horizontal_filter(
+        diagonal_detail_accumulator);
+    return output_value;
+}
+
+void main() {
+    const uvec2 group_origin = gl_WorkGroupID.xy * output_tile_width;
+    const uint valid_output_width = min(
+        output_tile_width, parameters.output_width - group_origin.x);
+    const uint valid_output_height = min(
+        output_tile_width, parameters.output_height - group_origin.y);
+    const uint required_source_width = valid_output_width * 2u + 2u;
+    const uint required_source_height = valid_output_height * 2u + 2u;
+    const uint local_index = gl_LocalInvocationIndex;
+    const uint source_tile_element_count =
+        source_tile_width * source_tile_width;
+    for (uint tile_index = local_index;
+         tile_index < source_tile_element_count;
+         tile_index += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+        const uint tile_row = tile_index / source_tile_width;
+        const uint tile_column = tile_index - tile_row * source_tile_width;
+        if (tile_row < required_source_height &&
+            tile_column < required_source_width) {
+            const int source_row = mirror_coordinate(
+                int(group_origin.y * 2u) - 1 + int(tile_row),
+                int(parameters.input_height));
+            const int source_column = mirror_coordinate(
+                int(group_origin.x * 2u) - 1 + int(tile_column),
+                int(parameters.input_width));
+            source_tile[tile_index] = load_value(source_row, source_column);
+        } else {
+            source_tile[tile_index] = 0;
+        }
+    }
+    barrier();
+
+    // Reuse the rounded low/high pair across overlapping horizontal taps.
+    const uint vertical_tile_element_count =
+        output_tile_width * source_tile_width;
+    for (uint vertical_index = local_index;
+         vertical_index < vertical_tile_element_count;
+         vertical_index += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+        const uint tile_row = vertical_index / source_tile_width;
+        const uint tile_column = vertical_index - tile_row * source_tile_width;
+        if (tile_row < valid_output_height &&
+            tile_column < required_source_width) {
+            vertical_tile[vertical_index] =
+                vertical_filter_pair(tile_row, tile_column);
+        }
+    }
+    barrier();
+
+    const uint output_column = gl_GlobalInvocationID.x;
+    const uint output_row = gl_GlobalInvocationID.y;
+    if (output_column >= parameters.output_width ||
+        output_row >= parameters.output_height) {
+        return;
+    }
+
+    const uint index = output_row * parameters.output_width + output_column;
+    const DwtOutput output_value = filter_output(
+        gl_LocalInvocationID.y, gl_LocalInvocationID.x);
+    output_low.values[index] = uint(output_value.low);
+    output_detail.values[index * 3u + 0u] = uint(
+        output_value.vertical_detail);
+    output_detail.values[index * 3u + 1u] = uint(
+        output_value.horizontal_detail);
+    output_detail.values[index * 3u + 2u] = uint(
+        output_value.diagonal_detail);
+}

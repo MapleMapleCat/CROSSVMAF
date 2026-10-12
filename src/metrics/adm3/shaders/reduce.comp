@@ -1,0 +1,76 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputSums {
+    uvec2 values[];
+} input_sums;
+layout(set = 0, binding = 1, std430) writeonly buffer OutputSums {
+    uvec2 values[];
+} output_sums;
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+layout(set = 0, binding = 2, std430) readonly buffer WaveSlots {
+    uvec2 entries[];
+} wave_slots;
+#endif
+
+layout(push_constant) uniform Parameters {
+    uint input_count;
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+    uint input_task_stride_elements;
+    uint input_scale_offset_elements;
+    uint input_channel_stride_elements;
+    uint output_task_stride_elements;
+    uint output_channel_stride_elements;
+#else
+    uint channel_capacity;
+#endif
+} parameters;
+
+shared uvec2 shared_sums[256];
+
+void main() {
+    const uint channel = gl_WorkGroupID.y;
+    const uint output_index = gl_WorkGroupID.x;
+    const uint input_index = output_index * gl_WorkGroupSize.x +
+                             gl_LocalInvocationIndex;
+    const uint local_index = gl_LocalInvocationIndex;
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+    const uint task_slot = wave_slots.entries[gl_WorkGroupID.z].x;
+    const uint input_frame_base =
+        task_slot * parameters.input_task_stride_elements +
+        parameters.input_scale_offset_elements;
+    const uint output_frame_base =
+        task_slot * parameters.output_task_stride_elements;
+    const uint input_element_index = input_frame_base +
+        channel * parameters.input_channel_stride_elements + input_index;
+#else
+    const uint input_element_index =
+        channel * parameters.channel_capacity + input_index;
+#endif
+    shared_sums[local_index] = input_index < parameters.input_count
+        ? input_sums.values[input_element_index]
+        : uvec2(0u);
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (local_index < stride) {
+            shared_sums[local_index] = cv_u64_add(
+                shared_sums[local_index], shared_sums[local_index + stride]);
+        }
+        barrier();
+    }
+    if (local_index == 0u) {
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+        const uint output_element_index = output_frame_base +
+            channel * parameters.output_channel_stride_elements +
+            output_index;
+#else
+        const uint output_element_index =
+            channel * parameters.channel_capacity + output_index;
+#endif
+        output_sums.values[output_element_index] = shared_sums[0];
+    }
+}

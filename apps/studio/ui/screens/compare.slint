@@ -1,0 +1,531 @@
+// Compare evaluations: several encodes of one reference video side by side.
+// The page has two steps. Set-up chooses the reference and the videos, which
+// are evaluated in the task queue unless a saved result can be reused. The
+// comparison lists them while they are evaluated and compares the finished
+// ones; its table doubles as the chart legend, and colors follow each
+// evaluation (SeriesPalette), never its row position.
+import { Theme, SeriesPalette } from "../theme.slint";
+import { VM } from "../models/app_state.slint";
+import { Chip, SBtn, PBar, LinkButton, IconButton } from "../components/controls.slint";
+import { Card, PageHeader, H3, Desc, StatusMark, ActionMessage } from "../components/display.slint";
+import { LineChart, RdChart, LegendLine } from "../components/charts.slint";
+import { CompareSetup } from "compare_setup.slint";
+
+// Column header text of the evaluations and candidates tables.
+component ColumnLabel inherits Text {
+    font-family: Theme.mono-font;
+    font-size: 9.5px;
+    letter-spacing: 0.3px;
+    color: Theme.text3;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+component Cell inherits Text {
+    font-family: Theme.mono-font;
+    font-size: 11.5px;
+    color: Theme.text2;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+// Series color box that shows or hides the evaluation's curve.
+component SeriesToggle inherits Rectangle {
+    in property <int> slot;
+    in property <bool> on: true;
+    in property <string> label;
+    callback toggled();
+    accessible-role: checkbox;
+    accessible-checked: on;
+    accessible-label: label;
+    accessible-action-default => { root.toggled(); }
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    border-width: 1.5px;
+    border-color: SeriesPalette.color-of(slot);
+    background: on ? SeriesPalette.color-of(slot) : transparent;
+    if root.on: Image {
+        source: @image-url("../icons/check.svg");
+        width: 11px;
+        colorize: #FFFFFF;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+}
+
+// One row of the evaluations table; widths come from ComparisonView.
+component TrackColumns inherits HorizontalLayout {
+    spacing: 8px;
+}
+
+// ---------- step 2: the comparison ----------
+component ComparisonView inherits VerticalLayout {
+    property <length> content-w: self.width;
+    property <int> track-count: VM.cmp-tracks.length;
+    property <length> half-card-w: (content-w - 16px) / 2;
+    // Evaluations table: fixed numeric columns, the name takes the rest.
+    property <length> table-w: content-w - 36px;
+    property <length> toggle-w: 20px;
+    property <length> rate-w: 88px;
+    property <length> number-w: 52px;
+    property <length> delta-w: 58px;
+    property <length> lossless-w: 70px;
+    property <length> grade-w: 96px;
+    property <length> actions-w: 124px;
+    // A video that is not compared yet shows its status across the numbers.
+    property <length> status-w: rate-w + 3 * number-w + delta-w + lossless-w + grade-w + 6 * 8px;
+    property <length> name-w: max(120px, table-w - toggle-w - status-w - actions-w - 3 * 8px);
+    spacing: 0;
+
+    PageHeader {
+        title: @tr("Compare evaluations");
+        description: VM.compare-description;
+        SBtn { kind: 3; text: @tr("New comparison"); clicked => { VM.new-comparison(); } }
+        SBtn { kind: 3; text: @tr("Export CSV"); enabled: VM.compare-available; clicked => { VM.export-comparison(); } }
+    }
+    Rectangle { height: 24px; }
+    ActionMessage { shown: VM.action-message-visible; text: VM.action-message; kind: VM.action-message-kind; }
+
+    // Videos still waiting or being evaluated for this comparison.
+    if VM.cmp-progress != "": VerticalLayout {
+        spacing: 0;
+        Rectangle {
+            height: 48px;
+            border-radius: 8px;
+            background: VM.cmp-queue-paused ? Theme.bg2 : Theme.accent-soft;
+            border-width: 1px;
+            border-color: VM.cmp-queue-paused ? Theme.stroke2 : Theme.accent-line;
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 8px;
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    Image { source: @image-url("../icons/activity.svg"); width: 16px; colorize: VM.cmp-queue-paused ? Theme.text3 : Theme.accent; }
+                }
+                Text { text: VM.cmp-progress; font-size: 12.5px; color: Theme.text; vertical-alignment: center; min-width: 0px; overflow: elide; }
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout {
+                    alignment: center;
+                    LinkButton { text: @tr("View task queue"); clicked => { VM.nav-to(1); } }
+                }
+                if VM.cmp-queue-paused: VerticalLayout {
+                    alignment: center;
+                    SBtn { kind: 1; text: @tr("Resume"); clicked => { VM.queue-start(); } }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    SBtn { kind: 2; text: @tr("Stop"); clicked => { VM.stop-comparison(); } }
+                }
+            }
+        }
+        Rectangle { height: 16px; }
+    }
+
+    // ---------- evaluations: table and legend ----------
+    Card {
+        height: tracks-lay.preferred-height + 32px;
+        tracks-lay := VerticalLayout {
+            x: 18px;
+            y: 16px;
+            width: parent.width - 36px;
+            height: parent.height - 32px;
+            spacing: 0;
+            HorizontalLayout {
+                height: 35px;
+                spacing: 10px;
+                H3 { text: @tr("Evaluations"); vertical-alignment: center; }
+                VerticalLayout { alignment: center; Chip { text: "\{root.track-count} / 4"; } }
+                Rectangle { horizontal-stretch: 1; }
+                SBtn {
+                    kind: root.track-count < 2 ? 1 : 3;
+                    text: @tr("Edit videos");
+                    clicked => { VM.edit-comparison(); }
+                }
+            }
+            Desc {
+                text: VM.compare-available
+                    ? @tr("Δ mean is the difference from the baseline. Select a color box to show or hide that curve, or a name to open its report.")
+                    : VM.cmp-progress != ""
+                    ? @tr("Each video joins the charts as soon as its evaluation finishes.")
+                    : @tr("Add at least one more video of {} to start comparing.", VM.cmp-reference);
+            }
+            Rectangle { height: 12px; }
+            TrackColumns {
+                height: 30px;
+                Rectangle { width: root.toggle-w; }
+                ColumnLabel { text: @tr("Evaluation"); width: root.name-w; }
+                ColumnLabel { text: @tr("Bitrate"); width: root.rate-w; }
+                ColumnLabel { text: @tr("Mean"); width: root.number-w; }
+                ColumnLabel { text: @tr("Δ mean"); width: root.delta-w; }
+                ColumnLabel { text: @tr("Low 5%"); width: root.number-w; }
+                ColumnLabel { text: @tr("Worst"); width: root.number-w; }
+                ColumnLabel { text: @tr("≥93 frames"); width: root.lossless-w; }
+                ColumnLabel { text: @tr("Grade"); width: root.grade-w; }
+                Rectangle { width: root.actions-w; }
+            }
+            Rectangle { height: 1px; background: Theme.stroke; }
+            for row in VM.cmp-tracks: VerticalLayout {
+                spacing: 0;
+                Rectangle {
+                    height: 46px;
+                    background: row-ta.has-hover ? Theme.row-hover : transparent;
+                    row-ta := TouchArea { }
+                    // Compared: the numbers.
+                    if row.state == 0: TrackColumns {
+                        VerticalLayout {
+                            width: root.toggle-w;
+                            alignment: center;
+                            SeriesToggle {
+                                slot: row.slot;
+                                on: row.visible;
+                                label: row.name;
+                                toggled => { VM.toggle-cmp-series(row.track); }
+                            }
+                        }
+                        Rectangle {
+                            width: root.name-w;
+                            accessible-role: button;
+                            accessible-label: @tr("Open the report of {}", row.name);
+                            accessible-action-default => { VM.open-cmp-track(row.track); }
+                            Text {
+                                width: 100%;
+                                height: 100%;
+                                text: row.name;
+                                font-family: Theme.mono-font;
+                                font-size: 12px;
+                                font-weight: 500;
+                                color: name-ta.has-hover ? Theme.accent : row.visible ? Theme.text : Theme.text3;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            name-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { VM.open-cmp-track(row.track); }
+                            }
+                        }
+                        Cell { text: row.rate; width: root.rate-w; }
+                        Cell { text: row.mean; width: root.number-w; font-size: 12.5px; font-weight: 600; color: Theme.text; }
+                        Cell { text: row.delta; width: root.delta-w; color: row.delta-kind == 0 ? Theme.text3 : Theme.text; }
+                        Cell { text: row.low5; width: root.number-w; }
+                        Cell { text: row.worst; width: root.number-w; }
+                        Cell { text: row.lossless; width: root.lossless-w; }
+                        VerticalLayout {
+                            width: root.grade-w;
+                            alignment: center;
+                            HorizontalLayout { alignment: start; Chip { text: row.grade; kind: row.grade-kind; } }
+                        }
+                        HorizontalLayout {
+                            width: root.actions-w;
+                            alignment: end;
+                            spacing: 4px;
+                            if row.baseline: VerticalLayout { alignment: center; Chip { text: @tr("Baseline"); kind: 4; } }
+                            if !row.baseline && VM.compare-available: VerticalLayout {
+                                alignment: center;
+                                LinkButton { text: @tr("Set as baseline"); clicked => { VM.set-cmp-baseline(row.track); } }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                IconButton {
+                                    icon: @image-url("../icons/x.svg");
+                                    label: @tr("Remove {} from the comparison", row.name);
+                                    clicked => { VM.remove-cmp-track(row.track); }
+                                }
+                            }
+                        }
+                    }
+                    // Not compared (yet): its progress, or why.
+                    if row.state != 0: TrackColumns {
+                        VerticalLayout {
+                            width: root.toggle-w;
+                            alignment: center;
+                            StatusMark { kind: row.state >= 3 ? 2 : 0; }
+                        }
+                        Text {
+                            text: row.name;
+                            width: root.name-w;
+                            font-family: Theme.mono-font;
+                            font-size: 12px;
+                            font-weight: 500;
+                            color: Theme.text2;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        HorizontalLayout {
+                            width: root.status-w;
+                            spacing: 12px;
+                            if row.state == 2: VerticalLayout {
+                                width: 120px;
+                                alignment: center;
+                                PBar { frac: max(0, row.progress); }
+                            }
+                            Text {
+                                text: row.status;
+                                font-size: 11.5px;
+                                color: row.state == 3 || row.state == 5 ? Theme.poor : Theme.text2;
+                                vertical-alignment: center;
+                                min-width: 0px;
+                                overflow: elide;
+                            }
+                        }
+                        HorizontalLayout {
+                            width: root.actions-w;
+                            alignment: end;
+                            spacing: 4px;
+                            if row.can-retry: VerticalLayout {
+                                alignment: center;
+                                LinkButton { text: @tr("Retry"); clicked => { VM.retry-cmp-track(row.track); } }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                IconButton {
+                                    icon: @image-url("../icons/x.svg");
+                                    label: @tr("Remove {} from the comparison", row.name);
+                                    clicked => { VM.remove-cmp-track(row.track); }
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.stroke; }
+            }
+            for note in VM.cmp-notes: Rectangle {
+                height: note-text.preferred-height + 8px;
+                Image { x: 0; y: 9px; source: @image-url("../icons/info.svg"); width: 13px; height: 13px; colorize: Theme.text3; }
+                note-text := Text {
+                    x: 21px;
+                    y: 8px;
+                    width: parent.width - 21px;
+                    text: note;
+                    font-size: 11px;
+                    color: Theme.text3;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    // ---------- per-frame curves ----------
+    if VM.compare-available: Rectangle { height: 16px; }
+    if VM.compare-available: Card {
+        height: chart-lay.preferred-height + 32px;
+        chart-lay := VerticalLayout {
+            x: 18px;
+            y: 16px;
+            width: parent.width - 36px;
+            height: parent.height - 32px;
+            spacing: 10px;
+            HorizontalLayout {
+                height: 22px;
+                H3 { text: @tr("Per-frame VMAF"); vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: @tr("Hover to compare frames"); font-size: 11.5px; color: Theme.text3; vertical-alignment: center; }
+            }
+            legend-row := HorizontalLayout {
+                height: 18px;
+                spacing: 0;
+                alignment: start;
+                // Items carry their own 16px gap, so videos that are not in
+                // the chart (width 0) leave no gap behind.
+                for item in VM.cmp-tracks: Rectangle {
+                    // Each item keeps its natural width unless all of them
+                    // together would not fit; then they share the row.
+                    width: item.state != 0 ? 0px : min(item-lay.preferred-width,
+                        (legend-row.width - guide-item.preferred-width) / max(1, VM.cmp-tracks.length) - 16px) + 16px;
+                    visible: item.state == 0;
+                    item-lay := HorizontalLayout {
+                        x: 0;
+                        width: max(0px, parent.width - 16px);
+                        spacing: 6px;
+                        opacity: item.visible ? 1 : 0.42;
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle { width: 14px; height: 2px; border-radius: 1px; background: SeriesPalette.color-of(item.slot); }
+                        }
+                        Text { text: item.name; min-width: 0px; overflow: elide; font-size: 11.5px; color: Theme.text2; vertical-alignment: center; }
+                    }
+                    TouchArea {
+                        x: 0;
+                        width: item-lay.width;
+                        mouse-cursor: pointer;
+                        clicked => { VM.toggle-cmp-series(item.track); }
+                    }
+                }
+                guide-item := HorizontalLayout {
+                    spacing: 6px;
+                    VerticalLayout { alignment: center; LegendLine { } }
+                    Text { text: @tr("93 visually lossless"); font-size: 11.5px; color: Theme.text2; vertical-alignment: center; }
+                }
+            }
+            chart-area := Rectangle {
+                width: parent.width;
+                height: cmp-chart.height;
+                cmp-chart := LineChart {
+                    x: 0;
+                    y: 0;
+                    chart-w: parent.width;
+                    zones: VM.cmp-zones;
+                    grid: VM.cmp-grid;
+                    vgrid: VM.cmp-vgrid;
+                    ylabels: VM.cmp-ylabels;
+                    xlabels: VM.cmp-xlabels;
+                    guides: VM.cmp-guides;
+                    series: VM.cmp-series;
+                }
+                if VM.cmp-hov-visible: Rectangle {
+                    x: VM.cmp-hov-x-frac * chart-area.width;
+                    y: 12 * cmp-chart.sx;
+                    width: 1px;
+                    height: (cmp-chart.vbh - 12 - 24) * cmp-chart.sx;
+                    background: Theme.crosshair;
+                }
+                for dot in VM.cmp-hov-rows: Rectangle {
+                    visible: VM.cmp-hov-visible;
+                    width: 9px;
+                    height: 9px;
+                    border-radius: 4.5px;
+                    background: SeriesPalette.color-of(dot.slot);
+                    border-width: 2px;
+                    border-color: Theme.bg2;
+                    x: VM.cmp-hov-x-frac * chart-area.width - 4.5px;
+                    y: dot.y-frac * cmp-chart.height - 4.5px;
+                }
+                if VM.cmp-hov-visible: Rectangle {
+                    property <length> tx0: VM.cmp-hov-x-frac * chart-area.width + 14px;
+                    x: tx0 + self.width > chart-area.width
+                        ? max(0px, tx0 - self.width - 28px)
+                        : tx0;
+                    y: 14 * cmp-chart.sx;
+                    width: min(320px, tip-lay.preferred-width + 24px);
+                    height: tip-lay.preferred-height + 18px;
+                    border-radius: 8px;
+                    background: Theme.bg3;
+                    border-width: 1px;
+                    border-color: Theme.stroke2;
+                    drop-shadow-blur: 16px;
+                    drop-shadow-color: Theme.tooltip-shadow;
+                    drop-shadow-offset-y: 6px;
+                    tip-lay := VerticalLayout {
+                        x: 12px;
+                        y: 9px;
+                        width: parent.width - 24px;
+                        height: parent.height - 18px;
+                        spacing: 5px;
+                        Text {
+                            text: VM.cmp-hov-title;
+                            font-family: Theme.mono-font;
+                            font-size: 10px;
+                            color: Theme.text3;
+                        }
+                        for hover-row in VM.cmp-hov-rows: HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle { width: 8px; height: 8px; border-radius: 2px; background: SeriesPalette.color-of(hover-row.slot); }
+                            }
+                            Text { text: hover-row.name; max-width: 170px; font-size: 11px; color: Theme.text2; overflow: elide; vertical-alignment: center; }
+                            Rectangle { horizontal-stretch: 1; min-width: 6px; }
+                            Text { text: hover-row.value; font-family: Theme.mono-font; font-size: 12px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                            Text { text: hover-row.delta; width: 58px; font-family: Theme.mono-font; font-size: 10.5px; color: Theme.text3; horizontal-alignment: right; vertical-alignment: center; }
+                        }
+                    }
+                }
+                TouchArea {
+                    mouse-cursor: crosshair;
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.move || event.kind == PointerEventKind.down) {
+                            VM.cmp-hover(self.mouse-x / 1px, self.width / 1px);
+                        }
+                    }
+                    changed has-hover => {
+                        if (!self.has-hover) {
+                            VM.cmp-hover-end();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- quality against bitrate, takeaways ----------
+    if VM.compare-available: Rectangle { height: 16px; }
+    if VM.compare-available: HorizontalLayout {
+        spacing: 16px;
+        property <length> row-h: max(rd-lay.preferred-height, insight-lay.preferred-height) + 32px;
+        Card {
+            width: root.half-card-w;
+            height: parent.row-h;
+            rd-lay := VerticalLayout {
+                x: 18px;
+                y: 16px;
+                width: parent.width - 36px;
+                height: parent.height - 32px;
+                spacing: 6px;
+                alignment: start;
+                H3 { text: @tr("Quality vs bitrate"); }
+                Desc {
+                    text: VM.rd-available
+                        ? @tr("Mean VMAF over video bitrate in Mbps. A ring marks the lowest bitrate with a mean of at least 93.")
+                        : @tr("Needs a known video bitrate for at least two of the evaluations.");
+                }
+                Rectangle { height: 4px; }
+                if VM.rd-available: RdChart {
+                    chart-w: parent.width;
+                    grid: VM.rd-grid;
+                    ylabels: VM.rd-ylabels;
+                    xlabels: VM.rd-xlabels;
+                    guide-dash: VM.rd-guide-dash;
+                    guide-label: VM.rd-guide-label;
+                    guide-lx: VM.rd-guide-label-x;
+                    guide-ly: VM.rd-guide-label-y;
+                    line-dash: VM.rd-line-dash;
+                    points: VM.rd-points;
+                }
+            }
+        }
+        Card {
+            width: root.half-card-w;
+            height: parent.row-h;
+            insight-lay := VerticalLayout {
+                x: 18px;
+                y: 16px;
+                width: parent.width - 36px;
+                height: parent.height - 32px;
+                spacing: 6px;
+                alignment: start;
+                H3 { text: @tr("Takeaways"); }
+                Desc { text: @tr("Worked out from the evaluations above; Δ values are relative to the baseline."); }
+                Rectangle { height: 6px; }
+                // Wrapped text in a HorizontalLayout keeps a one-line
+                // height; an explicit width lets it grow instead.
+                for insight in VM.cmp-insights: Rectangle {
+                    height: insight-text.preferred-height + 8px;
+                    Rectangle { x: 0; y: 7px; width: 5px; height: 5px; border-radius: 2.5px; background: Theme.accent; }
+                    insight-text := Text {
+                        x: 15px;
+                        y: 0;
+                        width: parent.width - 15px;
+                        text: insight;
+                        font-size: 12.5px;
+                        color: Theme.text;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component CompareScreen inherits Rectangle {
+    height: lay.preferred-height;
+
+    lay := VerticalLayout {
+        width: 100%;
+        spacing: 0;
+        if VM.cmp-setup-open: CompareSetup { }
+        if !VM.cmp-setup-open: ComparisonView { }
+    }
+}

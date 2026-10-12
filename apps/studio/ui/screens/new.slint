@@ -1,0 +1,207 @@
+// New assessment workbench: paired inputs, one action row, real recent reports.
+import { Theme, Bands } from "../theme.slint";
+import { Layout } from "../layout.slint";
+import { VM, RecentItem } from "../models/app_state.slint";
+import { Chip, ActionButton } from "../components/controls.slint";
+import { H1 } from "../components/display.slint";
+import { VideoInput } from "../components/video_input.slint";
+import { ResultItem } from "../components/result_item.slint";
+
+component InputStatus inherits HorizontalLayout {
+    spacing: 10px;
+    VerticalLayout {
+        width: 18px;
+        alignment: center;
+        Image {
+            source: VM.input-status-kind == 1 ? @image-url("../icons/check.svg") : @image-url("../icons/info.svg");
+            height: 18px;
+            colorize: VM.input-status-kind == 2 ? Theme.poor : VM.input-status-kind == 1 ? Theme.excellent : Theme.text2;
+        }
+    }
+    Text {
+        text: VM.input-status;
+        font-size: 12.5px;
+        color: VM.input-status-kind == 2 ? Theme.poor : VM.input-status-kind == 1 ? Theme.excellent : Theme.text2;
+        wrap: word-wrap;
+        min-width: 0px;
+        vertical-alignment: center;
+    }
+}
+
+component HistoryRow inherits Rectangle {
+    in property <RecentItem> item;
+    in property <length> scene-width;
+    in property <bool> shown: true;
+    property <string> delete-target: "";
+    callback open();
+    callback reuse();
+    callback delete-report();
+    height: shown ? 52px : 0px;
+    visible: shown;
+    min-width: 0px;
+    vertical-stretch: 0;
+    Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.stroke; }
+    ResultItem {
+        name: root.item.name;
+        details: root.item.details;
+        scene: root.item.scene;
+        scene-width: root.scene-width;
+        score: root.item.score;
+        score-color: Bands.themed-color-of(root.item.score-kind);
+        VerticalLayout {
+            width: 224px;
+            alignment: center;
+            HorizontalLayout {
+                height: 40px;
+                spacing: 6px;
+                alignment: end;
+                ActionButton { link: true; tight: true; text: @tr("Open report"); clicked => { root.open(); } }
+                ActionButton { link: true; tight: true; text: @tr("Reuse"); clicked => { root.reuse(); } }
+                ActionButton { link: true; tight: true; width: 68px; text: @tr("Delete"); clicked => { root.delete-target = root.item.report-id; confirm-popup.show(); } }
+            }
+        }
+    }
+    confirm-popup := PopupWindow {
+        x: root.width - 80px;
+        y: 6px;
+        width: 68px;
+        height: 40px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.bg0;
+            ActionButton {
+                link: true;
+                tight: true;
+                danger: true;
+                width: 68px;
+                height: 40px;
+                text: @tr("Confirm");
+                clicked => {
+                    confirm-popup.close();
+                    if (root.delete-target == root.item.report-id) { root.delete-report(); }
+                }
+            }
+        }
+    }
+}
+
+export component NewScreen inherits VerticalLayout {
+    property <length> content-w: self.width;
+    property <bool> compact: content-w < Layout.compact-content-width;
+    property <bool> expanded: false;
+    property <length> scene-width: compact ? 180px : 240px;
+    height: self.preferred-height;
+    vertical-stretch: 0;
+    spacing: 0;
+    alignment: start;
+
+    H1 { text: @tr("New quality evaluation"); height: 30px; }
+    Rectangle { height: 5px; }
+    Text { text: @tr("Choose two videos to start a per-frame quality analysis."); font-size: 13px; height: 20px; color: Theme.text2; }
+    Rectangle { height: 21px; }
+
+    HorizontalLayout {
+        height: 242px;
+        spacing: 18px;
+        VideoInput { width: (root.content-w - 18px) / 2; selected: VM.reference-selected; name: VM.reference-name; path: VM.reference-path; chips: VM.reference-chips; choose => { VM.choose-reference(); } }
+        VideoInput { width: (root.content-w - 18px) / 2; distorted: true; selected: VM.distorted-selected; name: VM.distorted-name; path: VM.distorted-path; chips: VM.distorted-chips; choose => { VM.choose-distorted(); } }
+    }
+    Rectangle { height: 24px; }
+    if root.compact: VerticalLayout {
+        vertical-stretch: 0;
+        spacing: 12px;
+        InputStatus { }
+        Rectangle { height: 0px; }
+    }
+    HorizontalLayout {
+        height: root.compact ? 44px : max(44px, status.preferred-height);
+        spacing: 14px;
+        status := InputStatus { width: root.compact ? 0px : 200px; visible: !root.compact; }
+        if !root.compact: Rectangle { width: 1px; height: 32px; background: Theme.stroke2; }
+        ActionButton { primary: true; text: @tr("Start evaluation"); icon: @image-url("../icons/play.svg"); height: 42px; enabled: VM.input-ready && !VM.run-active; clicked => { VM.start-run(); } }
+        ActionButton { text: @tr("+ Add to queue"); height: 42px; enabled: VM.input-ready; clicked => { VM.add-to-queue(); } }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    Rectangle { height: 8px; }
+    HorizontalLayout {
+        height: 32px;
+        spacing: 4px;
+        Text { text: @tr("Have several encoded versions of one video?"); font-size: 12px; color: Theme.text2; vertical-alignment: center; }
+        ActionButton { text: @tr("Compare them side by side"); link: true; icon: @image-url("../icons/arrow-right.svg"); height: 32px; clicked => { VM.compare-from-new(); } }
+        Rectangle { horizontal-stretch: 1; }
+    }
+
+    if VM.queue-items.length > 0: VerticalLayout {
+        vertical-stretch: 0;
+        spacing: 0;
+        Rectangle { height: 16px; }
+        HorizontalLayout {
+            height: 32px;
+            spacing: 10px;
+            Chip { text: VM.queue-items.length; kind: 4; }
+            Text { text: @tr("Batch queue · next: {}", VM.queue-items[0].pair); font-size: 12px; color: Theme.text2; min-width: 0px; overflow: elide; vertical-alignment: center; }
+            ActionButton { text: @tr("View task queue"); link: true; icon: @image-url("../icons/arrow-right.svg"); height: 32px; clicked => { VM.nav-to(1); } }
+        }
+    }
+    if VM.action-message-visible: VerticalLayout {
+        vertical-stretch: 0;
+        Rectangle { height: 12px; }
+        Text { text: VM.action-message; font-size: 12px; color: VM.action-message-kind == 2 ? Theme.poor : Theme.text2; wrap: word-wrap; }
+    }
+    Rectangle { height: 20px; }
+    Rectangle { height: 1px; background: Theme.stroke; }
+    Rectangle { height: 12px; }
+    HorizontalLayout {
+        height: 36px;
+        Text { text: @tr("Recent evaluations"); font-size: 17px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; }
+        if VM.recent.length > 3 || VM.recent-has-more: ActionButton {
+            text: root.expanded ? @tr("Show less") : @tr("View all");
+            link: true;
+            icon: @image-url("../icons/arrow-right.svg");
+            height: 32px;
+            clicked => { root.expanded = !root.expanded; }
+        }
+    }
+    Rectangle { height: 6px; }
+    if VM.recent.length > 0: Rectangle {
+        height: 34px;
+        background: Theme.bg1;
+        HorizontalLayout {
+            padding-left: 18px;
+            padding-right: 12px;
+            spacing: 18px;
+            Text { text: @tr("Video"); font-size: 11px; color: Theme.text2; min-width: 0px; vertical-alignment: center; }
+            Text { text: @tr("Viewing scene"); width: root.scene-width; font-size: 11px; color: Theme.text2; vertical-alignment: center; }
+            Text { text: "VMAF"; width: 78px; font-size: 11px; color: Theme.text2; vertical-alignment: center; }
+            Text { text: @tr("Actions"); width: 224px; font-size: 11px; color: Theme.text2; vertical-alignment: center; }
+        }
+    }
+    for item[i] in VM.recent: HistoryRow {
+        item: item;
+        shown: root.expanded || i < 3;
+        scene-width: root.scene-width;
+        open => { VM.select-recent(i); }
+        reuse => { VM.reuse-recent(i); }
+        delete-report => { VM.delete-recent(i); }
+    }
+    if root.expanded && VM.recent-has-more: HorizontalLayout {
+        height: 44px;
+        alignment: center;
+        ActionButton { text: @tr("Load more"); link: true; clicked => { VM.load-more-recent(); } }
+    }
+    if VM.recent.length == 0: VerticalLayout {
+        height: 112px;
+        alignment: center;
+        spacing: 8px;
+        Text { text: @tr("No evaluations yet"); color: Theme.text2; font-size: 14px; horizontal-alignment: center; }
+        Text { text: @tr("After your first evaluation, open its report or reuse its settings here."); color: Theme.text2; font-size: 12px; horizontal-alignment: center; }
+    }
+    Rectangle { height: 22px; }
+    HorizontalLayout {
+        spacing: 10px;
+        Image { source: @image-url("../icons/info.svg"); width: 16px; height: 16px; colorize: Theme.text2; }
+        Text { text: @tr("Videos are checked and scored on this computer; files are never uploaded to any server."); font-size: 11.5px; color: Theme.text2; wrap: word-wrap; min-width: 0px; }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}

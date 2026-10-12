@@ -1,0 +1,64 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer PoolPartial {
+    uvec4 values[];
+} partial;
+layout(set = 0, binding = 1, std430) readonly buffer SelectionState {
+    uint values[];
+} state;
+layout(set = 0, binding = 2, std430) buffer Results {
+    uvec2 values[];
+} results;
+
+layout(push_constant) uniform Parameters {
+    uint scale;
+    uint partial_offset;
+} parameters;
+
+uvec2 divide_u96_u32_rne(uvec3 numerator, uint denominator) {
+    uvec2 quotient = uvec2(0u);
+    uint remainder = 0u;
+    bool overflow = false;
+    for (int bit = 95; bit >= 0; --bit) {
+        const bool remainder_overflow = (remainder & 0x80000000u) != 0u;
+        remainder = (remainder << 1u) |
+            (bit >= 64 ? ((numerator.z >> uint(bit - 64)) & 1u)
+             : bit >= 32 ? ((numerator.y >> uint(bit - 32)) & 1u)
+                         : ((numerator.x >> uint(bit)) & 1u));
+        if (remainder_overflow || remainder >= denominator) {
+            remainder -= denominator;
+            if (bit >= 64) {
+                overflow = true;
+            } else if (bit >= 32) {
+                quotient.y |= 1u << uint(bit - 32);
+            } else {
+                quotient.x |= 1u << uint(bit);
+            }
+        }
+    }
+    if (overflow) return uvec2(0xffffffffu);
+    const uint complement = denominator - remainder;
+    if (remainder > complement ||
+        (remainder == complement && (quotient.x & 1u) != 0u)) {
+        quotient = cv_u64_add(quotient, uvec2(1u, 0u));
+    }
+    return quotient;
+}
+
+void main() {
+    const uvec4 reduced = partial.values[parameters.partial_offset];
+    const uint state_offset = parameters.scale * 7u;
+    const uint top_count = state.values[state_offset + 2u];
+    const uint needed = top_count - reduced.z;
+    const uvec2 total = cv_u64_add(
+        reduced.xy, cv_u32_multiply(state.values[state_offset], needed));
+    const uvec3 shifted = uvec3(total.x << 14u,
+        (total.y << 14u) | (total.x >> 18u), total.y >> 18u);
+    results.values[parameters.scale] =
+        divide_u96_u32_rne(shifted, top_count);
+}

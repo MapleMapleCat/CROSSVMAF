@@ -1,0 +1,63 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer ReferenceDetail {
+    uint values[];
+} reference_detail;
+layout(set = 0, binding = 1, std430) buffer RestoredDetail {
+    uint values[];
+} restored_detail;
+layout(set = 0, binding = 2, std430) writeonly buffer AdditiveDetail {
+    uint values[];
+} additive_detail;
+
+layout(push_constant) uniform Parameters {
+    uint coefficient_count;
+    uint scale;
+} parameters;
+
+const uint reciprocal_q30 = 1073741824u;
+
+uint magnitude_i32(int value) {
+    return value < 0 ? uint(-(value + 1)) + 1u : uint(value);
+}
+
+int ratio_q15(int original, int distorted) {
+    if (original == 0) return 32768;
+    const uint absolute = magnitude_i32(original);
+    uint denominator = absolute;
+    uint normalization_shift = 0u;
+    if (parameters.scale != 0u && absolute >= 32768u) {
+        normalization_shift = uint(findMSB(absolute) - 14);
+        denominator = (absolute + (1u << (normalization_shift - 1u))) >>
+                      normalization_shift;
+    }
+    const uint reciprocal = reciprocal_q30 / denominator;
+    uvec2 product = cv_i64_multiply_i32_u32(distorted, reciprocal);
+    if (original < 0) product = cv_u64_negate(product);
+    const uint rounding_shift = 14u + normalization_shift;
+    product = cv_u64_add(product, uvec2(1u << rounding_shift, 0u));
+    const uvec2 quotient = cv_i64_arithmetic_shift_right(
+        product, 15u + normalization_shift);
+    if (cv_i64_negative(quotient)) return 0;
+    if (quotient.y != 0u || quotient.x > 32768u) return 32768;
+    return int(quotient.x);
+}
+
+void main() {
+    const uint coefficient_index = gl_GlobalInvocationID.x;
+    if (coefficient_index >= parameters.coefficient_count) return;
+    const int original = int(reference_detail.values[coefficient_index]);
+    const int distorted = int(restored_detail.values[coefficient_index]);
+    const int ratio = ratio_q15(original, distorted);
+    uvec2 product = cv_i64_multiply_i32_u32(original, uint(ratio));
+    product = cv_u64_add(product, uvec2(16384u, 0u));
+    const int restored = int(
+        cv_i64_arithmetic_shift_right(product, 15u).x);
+    restored_detail.values[coefficient_index] = uint(restored);
+    additive_detail.values[coefficient_index] = uint(distorted - restored);
+}

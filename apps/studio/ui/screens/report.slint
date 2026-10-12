@@ -1,0 +1,712 @@
+// Evaluation report screen.
+// Dashed vertical line for the crosshair (emulates stroke-dasharray 3 3).
+component DashedVLine inherits Rectangle {
+    in property <color> line-color: #ECEEF4;
+    in property <length> dash: 3px;
+    in property <length> gap: 3px;
+    property <int> count: floor(self.height / (dash + gap));
+    for i in count: Rectangle {
+        x: 0;
+        y: i * (dash + gap);
+        width: 100%;
+        height: dash;
+        background: line-color;
+    }
+}
+import { Theme, Bands } from "../theme.slint";
+import { VM, SegRow, RecentItem } from "../models/app_state.slint";
+import { Chip, SBtn } from "../components/controls.slint";
+import { Card, PageHeader, H3, Desc } from "../components/display.slint";
+import { LineChart, HeatStrip, HistoChart, LegendLine, LegendDotShape } from "../components/charts.slint";
+import { ResultItem } from "../components/result_item.slint";
+
+component Quant inherits VerticalLayout {
+    in property <string> value;
+    in property <string> label;
+    in property <string> sub;
+    in property <int> value-kind: -1;
+    in property <int> locate: -1;
+    spacing: 3px;
+    Text {
+        text: value;
+        font-family: Theme.mono-font;
+        font-size: 17px;
+        font-weight: 700;
+        color: value-kind >= 0 ? Bands.color-of(value-kind) : Theme.text;
+    }
+    Text {
+        text: label;
+        font-size: 10.5px;
+        letter-spacing: 0.63px;
+        color: Theme.text3;
+    }
+    Rectangle {
+        height: 13px;
+        HorizontalLayout {
+            spacing: 0;
+            alignment: start;
+            Text {
+                text: sub;
+                font-size: 10px;
+                color: Theme.text3;
+                vertical-alignment: center;
+            }
+            if locate >= 0: Rectangle {
+                width: link-text.preferred-width;
+                link-text := Text {
+                    text: @tr("Locate on the curve →");
+                    font-size: 10px;
+                    color: locate-ta.has-hover ? Theme.accent : Theme.text2;
+                    vertical-alignment: center;
+                }
+                locate-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { VM.locate-frame(locate); }
+                }
+            }
+        }
+    }
+}
+
+// One clickable saved report in the empty state's picker list. Mirrors the
+// recent-evaluations table on the New screen, minus the actions column.
+component RecentPickRow inherits Rectangle {
+    in property <RecentItem> item;
+    in property <bool> shown: true;
+    callback open();
+    height: shown ? 48px : 0px;
+    visible: shown;
+    min-width: 0px;
+    vertical-stretch: 0;
+    background: ta.has-hover ? Theme.bg3 : #00000000;
+    Rectangle { y: parent.height - 1px; height: 1px; width: 100%; background: Theme.stroke; }
+    ResultItem {
+        name: root.item.name;
+        details: root.item.details;
+        scene: root.item.scene;
+        scene-width: 160px;
+        score: root.item.score;
+        score-color: Bands.themed-color-of(root.item.score-kind);
+        VerticalLayout { width: 16px; alignment: center; Image { source: @image-url("../icons/chevron-right.svg"); height: 13px; colorize: Theme.text3; } }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open(); }
+    }
+}
+
+// Keep the no-data state focused on the next useful action: watching the
+// running evaluation, opening a saved report, or starting the first one.
+component EmptyReport inherits VerticalLayout {
+    // 0 = fresh, 1 = evaluation running, 2 = saved reports to pick
+    property <int> empty-state: VM.nav-live ? 1 : VM.recent.length > 0 ? 2 : 0;
+    spacing: 0;
+    vertical-stretch: 0;
+    Card {
+        height: 88px;
+        HorizontalLayout {
+            padding-left: 22px;
+            padding-right: 18px;
+            spacing: 16px;
+            VerticalLayout {
+                width: 44px;
+                alignment: center;
+                Rectangle {
+                    width: 44px;
+                    height: 44px;
+                    border-radius: 11px;
+                    background: Theme.accent-soft;
+                    Image {
+                        source: root.empty-state == 1 ? @image-url("../icons/activity.svg") : @image-url("../icons/file-chart-column.svg");
+                        width: 22px;
+                        height: 22px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        colorize: Theme.accent;
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 4px;
+                min-width: 0px;
+                Text {
+                    text: root.empty-state == 1 ? @tr("Evaluation in progress") : root.empty-state == 2 ? @tr("No report is open") : @tr("No report yet");
+                    font-size: 15px;
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                if root.empty-state != 2: Text {
+                    text: root.empty-state == 1 ? @tr("{n} task in the queue" | "{n} tasks in the queue" % VM.queue-items.length) : VM.report-description;
+                    font-size: 12px;
+                    color: Theme.text2;
+                    min-width: 0px;
+                    overflow: elide;
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    spacing: 10px;
+                    if root.empty-state == 1: SBtn { kind: 1; size: 2; text: @tr("View task queue"); clicked => { VM.nav-to(1); } }
+                    SBtn { kind: root.empty-state == 0 ? 1 : 3; size: 2; text: @tr("New evaluation"); clicked => { VM.nav-to(0); } }
+                    if root.empty-state != 1 && VM.queue-items.length > 0: SBtn {
+                        kind: 3;
+                        size: 2;
+                        text: @tr("View task queue");
+                        clicked => { VM.nav-to(1); }
+                    }
+                }
+            }
+        }
+    }
+    if root.empty-state == 2: VerticalLayout {
+        vertical-stretch: 0;
+        spacing: 0;
+        Rectangle { height: 20px; }
+        HorizontalLayout {
+            height: 36px;
+            Text { text: @tr("Recent evaluations"); font-size: 17px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            if VM.recent.length > 5 || VM.recent-has-more: Rectangle {
+                width: view-all-text.preferred-width + 8px;
+                border-radius: 4px;
+                background: view-all-ta.has-hover ? Theme.bg3 : #00000000;
+                view-all-text := Text {
+                    text: @tr("View all");
+                    font-size: 12px;
+                    color: view-all-ta.has-hover ? Theme.accent : Theme.text2;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+                view-all-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { VM.nav-to(0); }
+                }
+            }
+        }
+        Rectangle { height: 6px; }
+        Rectangle {
+            height: 34px;
+            background: Theme.bg1;
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 12px;
+                spacing: 18px;
+                Text { text: @tr("Video"); font-size: 11px; color: Theme.text2; min-width: 0px; vertical-alignment: center; }
+                Text { text: @tr("Viewing scene"); width: 160px; font-size: 11px; color: Theme.text2; vertical-alignment: center; }
+                Text { text: "VMAF"; width: 78px; font-size: 11px; color: Theme.text2; vertical-alignment: center; }
+                Rectangle { width: 16px; }
+            }
+        }
+        for item[i] in VM.recent: RecentPickRow {
+            item: item;
+            shown: i < 5;
+            open => { VM.select-recent(i); }
+        }
+    }
+}
+
+export component ReportScreen inherits Rectangle {
+    property <length> content-w: self.width;
+    height: lay.preferred-height;
+
+    property <length> side-card-w: (content-w - 16px) / 2;
+    property <length> time-column-w: side-card-w - 36px - 286px;
+    property <length> segment-row-h: 48px;
+    // Insets, title, description, column header, footer and spacing, plus
+    // five row slots. This size never depends on how many slots are occupied.
+    property <length> details-h: 162px + segment-page-size * (segment-row-h + 1px);
+    property <int> segment-page: 0;
+    property <int> segment-page-size: 5;
+    property <[SegRow]> segments: VM.rep-segs;
+    property <int> segment-count: segments.length;
+    property <int> segment-pages: max(1, ceil(segment-count / segment-page-size));
+    property <int> first-segment: segment-page * segment-page-size;
+    property <int> visible-segments: min(segment-page-size, max(0, segment-count - first-segment));
+    changed segment-count => { segment-page = 0; }
+    changed segments => { segment-page = 0; }
+
+    lay := VerticalLayout {
+        width: 100%;
+        spacing: 0;
+
+        if VM.report-from-compare: HorizontalLayout {
+            height: 30px;
+            alignment: start;
+            back := Rectangle {
+                accessible-role: button;
+                accessible-label: back-text.text;
+                accessible-action-default => { VM.nav-to(3); }
+                width: back-text.preferred-width + 12px;
+                border-radius: 6px;
+                background: back-ta.has-hover ? Theme.bg3 : transparent;
+                back-text := Text {
+                    text: @tr("← Back to the comparison");
+                    font-size: 12px;
+                    color: Theme.accent;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+                back-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { VM.nav-to(3); }
+                }
+            }
+        }
+        if VM.report-from-compare: Rectangle { height: 8px; }
+        PageHeader {
+            title: @tr("Evaluation report");
+            description: VM.report-available ? VM.report-description : "";
+            mono: VM.report-available;
+            if VM.report-available: SBtn {
+                kind: 3;
+                text: @tr("Compare versions");
+                enabled: VM.report-available;
+                clicked => { VM.compare-report(); }
+            }
+            if VM.report-available: SBtn {
+                kind: 3;
+                text: VM.export-idx == 0 ? @tr("Export JSON") : @tr("Export CSV");
+                enabled: VM.report-available;
+                clicked => { VM.export-report(VM.export-idx); }
+            }
+            if VM.report-available: SBtn {
+                kind: 3;
+                text: @tr("Export diagnostics");
+                enabled: VM.report-available;
+                clicked => { VM.export-report(2); }
+            }
+            if VM.report-available: SBtn { kind: 1; text: @tr("Customer report (PDF)"); clicked => { VM.generate-pdf(); } }
+    }
+        Rectangle { height: 24px; }
+
+        if VM.action-message-visible: Rectangle {
+            height: 38px;
+            border-radius: 8px;
+            background: VM.action-message-kind == 2 ? Theme.poor-bg : Theme.bg2;
+            border-width: 1px;
+            border-color: VM.action-message-kind == 2 ? Theme.poor-line : Theme.stroke2;
+            Text {
+                x: 12px;
+                width: parent.width - 24px;
+                text: VM.action-message;
+                font-size: 11.5px;
+                color: VM.action-message-kind == 2 ? Theme.poor : Theme.text2;
+                vertical-alignment: center;
+            }
+        }
+        if VM.action-message-visible: Rectangle { height: 16px; }
+
+        if !VM.report-available: EmptyReport { }
+
+        if VM.report-available: VerticalLayout {
+        spacing: 0;
+        // hero band: score lockup on the left, three equal stat cells on the
+        // right. Measurements only — no verdicts or interpretations.
+        Card {
+            height: hero-lay.preferred-height + 44px;
+            hero-lay := HorizontalLayout {
+                x: 26px;
+                y: 22px;
+                width: parent.width - 52px;
+                // A layout child of a Rectangle fills the parent by default;
+                // with only x/y/width set it would keep 100% height and push
+                // the chips row 22px past the card's bottom edge.
+                height: parent.height - 44px;
+                spacing: 0;
+                HorizontalLayout {
+                    horizontal-stretch: 0;
+                    spacing: 18px;
+                    Text {
+                        text: VM.rep-score;
+                        font-size: 46px;
+                        font-weight: 600;
+                        letter-spacing: -1.5px;
+                        color: Bands.color-of(VM.rep-score-kind);
+                        vertical-alignment: center;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 7px;
+                        Text {
+                            text: @tr("VMAF · clip mean");
+                            font-size: 10.5px;
+                            letter-spacing: 1.05px;
+                            color: Theme.text3;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+                            Chip { text: VM.rep-grade; kind: VM.rep-grade-kind; }
+                            Chip { text: VM.report-duration-label; }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 8px;
+                    Rectangle { width: 20px; }
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle { width: 1px; height: 60px; background: Theme.stroke; }
+                    }
+                    for quant[i] in VM.rep-quants: HorizontalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 0;
+                        Rectangle { width: 20px; }
+                        Quant {
+                            horizontal-stretch: 0;
+                            alignment: center;
+                            value: quant.value;
+                            label: quant.label;
+                            sub: quant.sub;
+                            value-kind: quant.value-kind;
+                            locate: quant.locate;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        if i + 1 < VM.rep-quants.length: VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 0;
+                            Rectangle { width: 1px; height: 60px; background: Theme.stroke; }
+                        }
+                    }
+                }
+            }
+        }
+        Rectangle { height: 10px; }
+        Text {
+            text: VM.report-meta-line;
+            height: 16px;
+            font-size: 11px;
+            color: Theme.text3;
+            overflow: elide;
+        }
+        Rectangle { height: 10px; }
+
+        // per-frame curve card
+        Card {
+            height: chart-lay.preferred-height + 32px;
+            chart-lay := VerticalLayout {
+                x: 18px;
+                y: 16px;
+                width: parent.width - 36px;
+                height: parent.height - 32px;
+                spacing: 10px;
+                HorizontalLayout {
+                    height: 22px;
+                    H3 { text: @tr("Per-frame VMAF"); vertical-alignment: center; }
+                    Rectangle { horizontal-stretch: 1; }
+                    HorizontalLayout {
+                        spacing: 16px;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout { alignment: center; LegendDotShape { background: Theme.accent; } }
+                            Text { text: @tr("VMAF (per frame)"); font-size: 11.5px; color: Theme.text2; vertical-alignment: center; }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout { alignment: center; LegendLine { } }
+                            Text { text: @tr("93 visually lossless"); font-size: 11.5px; color: Theme.text2; vertical-alignment: center; }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            VerticalLayout { alignment: center; LegendDotShape { background: Theme.poor; } }
+                            Text { text: @tr("Low-score markers"); font-size: 11.5px; color: Theme.text2; vertical-alignment: center; }
+                        }
+                        Text { text: @tr("Hover for frame details"); font-size: 11.5px; color: Theme.text3; vertical-alignment: center; }
+                    }
+                }
+                chart-area := Rectangle {
+                    width: parent.width;
+                    height: rep-chart.height + rep-strip.height;
+                    rep-chart := LineChart {
+                        x: 0;
+                        y: 0;
+                        chart-w: parent.width;
+                        zones: VM.rep-zones;
+                        grid: VM.rep-grid;
+                        vgrid: VM.rep-vgrid;
+                        ylabels: VM.rep-ylabels;
+                        xlabels: VM.rep-xlabels;
+                        guides: VM.rep-guides;
+                        series: [{ path: VM.rep-path, use-accent: true, width: 1.6, visible: true, opacity: 1 }];
+                        markers: VM.rep-markers;
+                    }
+                    rep-strip := HeatStrip {
+                        x: 0;
+                        y: rep-chart.height;
+                        chart-w: parent.width;
+                        cells: VM.rep-strip;
+                        progress-frac: 1;
+                        frame-w: VM.rep-strip-frame-w;
+                        cursor-visible: VM.hov-visible;
+                        cursor-x: VM.hov-x-frac * 1160;
+                    }
+                    // crosshair
+                    if VM.hov-visible: Rectangle {
+                        x: VM.hov-x-frac * chart-area.width;
+                        y: 12 * rep-chart.sx;
+                        width: 1px;
+                        height: (rep-chart.vbh - 12 - 24) * rep-chart.sx;
+                        opacity: 0.25;
+                        DashedVLine { width: 1px; height: 100%; }
+                    }
+                    if VM.hov-visible: Rectangle {
+                        width: 7.2px;
+                        height: 7.2px;
+                        border-radius: 3.6px;
+                        background: Theme.accent;
+                        border-width: 1.5px;
+                        border-color: Theme.bg0;
+                        x: VM.hov-x-frac * chart-area.width - 3.6px;
+                        y: VM.hov-y-frac * rep-chart.height - 3.6px;
+                    }
+                    // located frame highlight
+                    if VM.hl-visible: Rectangle {
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 8px;
+                        border-width: 2px;
+                        border-color: Theme.band-poor;
+                        background: #00000000;
+                        x: VM.hl-x-frac * chart-area.width - 8px;
+                        y: VM.hl-y-frac * rep-chart.height - 8px;
+                    }
+                    if VM.hl-visible: Rectangle {
+                        property <float> phase: 0;
+                        width: 2 * (6px + 10px * phase);
+                        height: 2 * (6px + 10px * phase);
+                        border-radius: (6px + 10px * phase);
+                        border-width: 2px;
+                        border-color: Theme.band-poor;
+                        background: #00000000;
+                        opacity: 0.9 * (1 - phase);
+                        x: VM.hl-x-frac * chart-area.width - self.width / 2;
+                        y: VM.hl-y-frac * rep-chart.height - self.height / 2;
+                        Timer {
+                            interval: 33ms;
+                            running: VM.hl-visible;
+                            triggered => { phase = mod(phase + 0.033 / 1.1, 1); }
+                        }
+                    }
+                    // hover tooltip
+                    if VM.hov-visible: Rectangle {
+                        property <length> tx0: VM.hov-x-frac * chart-area.width + 12px;
+                        x: tx0 + self.width > chart-area.width
+                            ? max(0px, tx0 - self.width - 24px)
+                            : tx0;
+                        y: max(2px, VM.hov-y-frac * rep-chart.height - self.height - 12px);
+                        width: max(150px, tip-lay.preferred-width + 22px);
+                        height: tip-lay.preferred-height + 16px;
+                        border-radius: 8px;
+                        background: Theme.bg3;
+                        border-width: 1px;
+                        border-color: Theme.stroke2;
+                        drop-shadow-blur: 16px;
+                        drop-shadow-color: Theme.tooltip-shadow;
+                        drop-shadow-offset-y: 6px;
+                        tip-lay := VerticalLayout {
+                            x: 11px;
+                            y: 8px;
+                            width: parent.width - 22px;
+                            // Layouts inside a Rectangle otherwise inherit its
+                            // full height, pushing this inset content below it.
+                            height: parent.height - 16px;
+                            spacing: 2px;
+                            Text {
+                                text: VM.hov-title;
+                                font-family: Theme.mono-font;
+                                font-size: 10px;
+                                color: Theme.text3;
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 7px;
+                                        height: 7px;
+                                        border-radius: 2px;
+                                        background: Bands.color-of(VM.hov-kind);
+                                    }
+                                }
+                                Text { text: "VMAF "; font-size: 11px; color: Theme.text2; vertical-alignment: center; }
+                                Text { text: VM.hov-value; font-size: 12.5px; font-weight: 700; color: Bands.color-of(VM.hov-kind); vertical-alignment: center; }
+                                Text { text: " · " + VM.hov-band; font-size: 11px; color: Theme.text2; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                    TouchArea {
+                        height: rep-chart.height;
+                        mouse-cursor: crosshair;
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.move || event.kind == PointerEventKind.down) {
+                                VM.report-hover(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, rep-chart.height / 1px);
+                            }
+                        }
+                        changed has-hover => {
+                            if (!self.has-hover) {
+                                VM.report-hover-end();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Rectangle { height: 16px; }
+
+        HorizontalLayout {
+            spacing: 16px;
+            segments-card := Card {
+                width: side-card-w;
+                height: details-h;
+                seg-lay := VerticalLayout {
+                    x: 18px;
+                    y: 16px;
+                    width: parent.width - 36px;
+                    height: parent.height - 32px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        height: 22px;
+                        H3 { text: @tr("Segments to review"); vertical-alignment: center; }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: @tr("{n} segment" | "{n} segments" % segment-count); font-size: 11.5px; color: Theme.text3; vertical-alignment: center; }
+                    }
+                    Text {
+                        height: 16px;
+                        text: @tr("Click Show to locate on the curve; causes are only hints.");
+                        font-size: 11px;
+                        color: Theme.text3;
+                    }
+                    VerticalLayout {
+                        spacing: 0;
+                        HorizontalLayout {
+                            height: 32px;
+                            spacing: 6px;
+                            Text { text: @tr("Time / frames"); width: time-column-w; font-family: Theme.mono-font; font-size: 10px; color: Theme.text3; }
+                            Text { text: @tr("Duration"); width: 64px; font-family: Theme.mono-font; font-size: 10px; color: Theme.text3; }
+                            Text { text: @tr("Min"); width: 42px; font-family: Theme.mono-font; font-size: 10px; color: Theme.text3; }
+                            Text { text: @tr("Symptom"); width: 116px; font-family: Theme.mono-font; font-size: 10px; color: Theme.text3; }
+                            Text { text: ""; width: 40px; }
+                        }
+                        Rectangle { height: 1px; background: Theme.stroke; }
+                        // Always render all slots, including the empty last-page rows.
+                        for offset in segment-page-size: VerticalLayout {
+                            spacing: 0;
+                            Rectangle {
+                                height: segment-row-h;
+                                if offset < visible-segments: Rectangle {
+                                    property <SegRow> segment-data: segments[first-segment + offset];
+                                    background: row-ta.has-hover ? Theme.row-hover : #00000000;
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Text { text: segment-data.time; width: time-column-w; font-family: Theme.mono-font; font-size: 11px; color: Theme.text; vertical-alignment: center; wrap: word-wrap; overflow: elide; }
+                                        Text { text: segment-data.duration; width: 64px; font-family: Theme.mono-font; font-size: 11px; color: Theme.text2; vertical-alignment: center; wrap: word-wrap; overflow: elide; }
+                                        Text { text: segment-data.score; width: 42px; font-family: Theme.mono-font; font-size: 12px; color: Bands.color-of(segment-data.score-kind); vertical-alignment: center; }
+                                        VerticalLayout {
+                                            width: 116px;
+                                            alignment: center;
+                                            Rectangle {
+                                                height: 32px;
+                                                border-radius: 6px;
+                                                border-width: 1px;
+                                                background: segment-data.phen-kind == 4 ? Theme.accent-soft : Bands.bg-of(segment-data.phen-kind);
+                                                border-color: segment-data.phen-kind == 4 ? Theme.accent-line : Bands.line-of(segment-data.phen-kind);
+                                                Text {
+                                                    x: 6px;
+                                                    width: parent.width - 12px;
+                                                    text: segment-data.phenomenon;
+                                                    font-family: Theme.mono-font;
+                                                    font-size: 10.5px;
+                                                    color: segment-data.phen-kind == 4 ? Theme.accent : Bands.themed-color-of(segment-data.phen-kind);
+                                                    wrap: word-wrap;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                        Text { text: @tr("Show →"); width: 40px; font-size: 11px; color: Theme.accent; vertical-alignment: center; }
+                                    }
+                                    row-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { VM.locate-frame(segment-data.frame); }
+                                    }
+                                }
+                                if segment-count == 0 && offset == 0: Text {
+                                    text: VM.report-available ? @tr("No segments need review") : @tr("Segment details appear after an evaluation");
+                                    font-size: 12px;
+                                    color: Theme.text3;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Rectangle { height: 1px; background: Theme.stroke; }
+                        }
+                    }
+                    // Keep the footer in place even for zero or one page.
+                    HorizontalLayout {
+                        height: 35px;
+                        spacing: 10px;
+                        Text {
+                            text: segment-count == 0 ? @tr("No segments") : @tr("Segments {}–{}", first-segment + 1, first-segment + visible-segments);
+                            font-size: 11px;
+                            color: Theme.text3;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        previous-page := SBtn {
+                            kind: 3;
+                            text: @tr("Previous");
+                            enabled: segment-page > 0;
+                            clicked => { segment-page = max(0, segment-page - 1); }
+                        }
+                        Text { text: "\{segment-page + 1} / \{segment-pages}"; font-size: 11.5px; color: Theme.text2; vertical-alignment: center; }
+                        next-page := SBtn {
+                            kind: 3;
+                            text: @tr("Next");
+                            enabled: segment-page + 1 < segment-pages;
+                            clicked => { segment-page = min(segment-pages - 1, segment-page + 1); }
+                        }
+                    }
+                }
+            }
+            distribution-card := Card {
+                width: side-card-w;
+                height: details-h;
+                hist-lay := VerticalLayout {
+                    x: 18px;
+                    y: 16px;
+                    width: parent.width - 36px;
+                    height: parent.height - 32px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        height: 22px;
+                        H3 { text: @tr("Score distribution"); vertical-alignment: center; }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: VM.hist-summary; font-family: Theme.mono-font; font-size: 11px; color: Theme.text3; vertical-alignment: center; }
+                    }
+                    Text { text: @tr("Bars colored by quality grade; bins adapt to the data (2.5 pts per bin)"); height: 16px; font-size: 11px; color: Theme.text3; }
+                    distribution-chart := HistoChart {
+                        chart-w: parent.width;
+                        chart-h: details-h - 112px;
+                        bars: VM.hist-bars;
+                        labels: VM.hist-labels;
+                    }
+                    Rectangle {
+                        height: 18px;
+                        HorizontalLayout {
+                            spacing: 16px;
+                            alignment: start;
+                            for item[i] in VM.hist-legend: HorizontalLayout {
+                                spacing: 6px;
+                                VerticalLayout { alignment: center; LegendDotShape { background: Bands.color-of(item.quality-kind); } }
+                                Text { text: item.label; font-size: 11.5px; color: Theme.text2; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        }
+    }
+}

@@ -1,0 +1,32 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer SelectionState {
+    uint values[];
+} state;
+layout(set = 0, binding = 1, std430) writeonly buffer RadixCounts {
+    uint values[];
+} radix_counts;
+
+layout(push_constant) uniform Parameters {
+    uint top_counts[5];
+} parameters;
+
+void main() {
+    const uint local_index = gl_LocalInvocationIndex;
+    const uint scale = gl_WorkGroupID.x;
+    const uint state_offset = scale * 7u;
+    const uint count_offset = scale * 256u;
+    if (local_index == 0u) {
+        state.values[state_offset] = 0u;
+        state.values[state_offset + 1u] = parameters.top_counts[scale];
+        state.values[state_offset + 2u] = parameters.top_counts[scale];
+        state.values[state_offset + 3u] = 0u;
+        state.values[state_offset + 4u] = 0u;
+        state.values[state_offset + 5u] = 0u;
+        state.values[state_offset + 6u] = 0u;
+    }
+    radix_counts.values[count_offset + local_index] = 0u;
+}

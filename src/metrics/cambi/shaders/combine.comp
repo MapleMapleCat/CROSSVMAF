@@ -1,0 +1,33 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Results {
+    uvec2 values[];
+} results;
+
+layout(push_constant) uniform Parameters {
+    uint window_size;
+    uint maximum_low;
+    uint maximum_high;
+} parameters;
+
+void main() {
+    const uint weights[5] = uint[5](16u, 8u, 4u, 2u, 1u);
+    uvec2 weighted = uvec2(0u);
+    for (uint scale = 0u; scale < 5u; ++scale) {
+        const uvec2 value = results.values[scale];
+        uvec2 product = cv_u32_multiply(value.x, weights[scale]);
+        product.y += value.y * weights[scale];
+        weighted = cv_u64_add(weighted, product);
+    }
+    const uint pixels = parameters.window_size * parameters.window_size;
+    uvec2 combined = cv_u64_divide_u32_rne(weighted, pixels);
+    const uvec2 maximum = uvec2(parameters.maximum_low,
+                                parameters.maximum_high);
+    if (cv_u64_less(maximum, combined)) combined = maximum;
+    results.values[5] = combined;
+}

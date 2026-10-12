@@ -1,0 +1,326 @@
+// Application state and page row contracts.
+import { ZoneRect, SegLine, AxisLabel, GuideLine, SeriesPath, HeatCell, MarkerDot, HistoBar, LegendDot, RdPoint } from "chart_types.slint";
+
+// One row of the report's "Segments to review" table.
+export struct SegRow {
+    time: string,
+    duration: string,
+    score: string,
+    score-kind: int,
+    phenomenon: string,
+    phen-kind: int,
+    frame: int,
+}
+
+// One of the three small quantities in the report hero band.
+export struct QuantItem {
+    value: string,
+    label: string,
+    sub: string,
+    value-kind: int, // -1 = default text color
+    locate: int, // -1 = none; otherwise the sub line links to locating this frame
+}
+
+// One evaluation on the compare screen. `track` is the index the compare
+// callbacks take; compared rows are listed in bit-rate order, then the videos
+// still being evaluated. `slot` is the 1-based SeriesPalette color.
+export struct CmpTrack {
+    track: int,
+    slot: int,
+    name: string,
+    // 0 = compared; otherwise not (yet) in the charts: 1 = waiting,
+    // 2 = being evaluated, 3 = failed, 4 = stopped, 5 = not comparable.
+    state: int,
+    progress: float, // 0..1 while being evaluated, -1 when unknown
+    status: string, // for state > 0: progress, or why it is not compared
+    can-retry: bool,
+    visible: bool,
+    baseline: bool,
+    rate: string,
+    mean: string,
+    delta: string,
+    delta-kind: int, // 0 = baseline or equal, 1 = above, 2 = below the baseline
+    low5: string,
+    worst: string,
+    lossless: string, // share of visually lossless frames
+    grade: string,
+    grade-kind: int,
+}
+
+// One video in the compare set-up list.
+export struct CmpSetupRow {
+    name: string,
+    details: string, // video spec, the saved result, or why it cannot be compared
+    status: string,
+    status-kind: int, // 0 = checking, 1 = to evaluate, 2 = cannot be compared, 3 = saved or already compared
+    action: int, // 0 = none, 1 = evaluate again, 2 = use the saved result
+}
+
+// A saved evaluation of the compared reference that can be added.
+export struct CmpCandidate {
+    name: string,
+    details: string,
+    score: string,
+    available: bool,
+    reason: string, // why it cannot be added, when not available
+}
+
+// One visible evaluation in the compare chart's hover tooltip.
+export struct CmpHoverRow {
+    slot: int,
+    name: string,
+    value: string,
+    delta: string,
+    y-frac: float,
+}
+
+// Recently evaluated pair on the new evaluation screen.
+export struct RecentItem {
+    report-id: string,
+    name: string,
+    score: string,
+    score-kind: int,
+    scene: string,
+    details: string,
+}
+
+// One pending evaluation in the in-memory batch queue.
+export struct QueueItem {
+    pair: string,
+    status: string,
+    status-kind: int, // 0 = waiting, 1 = running, 2 = failed, 4 = completed
+    action-kind: int, // 0 = none, 1 = cancel, 2 = remove, 3 = retry
+    in-comparison: bool, // evaluated for the Compare screen
+}
+
+export global VM {
+    // 0 = new, 1 = run, 2 = report, 3 = compare, 4 = settings
+    in-out property <int> screen: 0;
+    in-out property <bool> nav-live: false;
+
+    // ---- New evaluation screen ----
+    in-out property <string> reference-name: @tr("Choose a reference video");
+    in-out property <bool> reference-selected: false;
+    in-out property <string> reference-path: "";
+    in-out property <[string]> reference-chips: [@tr("Click to choose a local file")];
+    in-out property <string> distorted-name: @tr("Choose a distorted video");
+    in-out property <bool> distorted-selected: false;
+    in-out property <string> distorted-path: "";
+    in-out property <[string]> distorted-chips: [@tr("Click to choose a local file")];
+    in-out property <bool> input-ready: false;
+    in-out property <string> input-status: @tr("Choose a reference video and a distorted video first");
+    in-out property <int> input-status-kind: 0; // 0 = neutral, 1 = valid, 2 = error
+
+    // ---- Run screen ----
+    in-out property <string> run-pct: "0.0%";
+    in-out property <string> run-frames: @tr("{n} frame" | "{n} frames" % 0);
+    in-out property <string> run-speed: "—";
+    in-out property <string> run-elapsed: "0.0 s";
+    in-out property <string> run-eta: "—";
+    in-out property <float> run-frac: 0;
+    in-out property <bool> run-done: false;
+    in-out property <bool> run-active: false;
+    in-out property <bool> run-stopping: false;
+    in-out property <string> run-title: @tr("Task queue");
+    in-out property <string> run-description: @tr("No task is running");
+    in-out property <string> run-backend: @tr("Waiting for a task");
+    in-out property <string> run-status: "";
+    in-out property <int> run-status-kind: 0;
+    in-out property <[QueueItem]> queue-items;
+    in-out property <bool> queue-active: false;
+    in-out property <string> live-cur: "—";
+    in-out property <string> live-mean: "—";
+    in-out property <[ZoneRect]> live-zones;
+    in-out property <[SegLine]> live-grid;
+    in-out property <[SegLine]> live-vgrid;
+    in-out property <[AxisLabel]> live-ylabels;
+    in-out property <[AxisLabel]> live-xlabels;
+    in-out property <[GuideLine]> live-guides;
+    in-out property <string> live-path;
+    in-out property <bool> live-dot-visible: false;
+    in-out property <float> live-dot-x: 0;
+    in-out property <float> live-dot-y: 0;
+    in-out property <[HeatCell]> live-strip;
+    in-out property <float> live-strip-frac: 0; // evaluated fraction of the strip
+    in-out property <float> live-strip-frame-w: 0; // frame rect width in vb units
+
+    // ---- Report screen ----
+    in-out property <string> rep-score: "0.0";
+    in-out property <bool> report-available: false;
+    in-out property <string> report-description: @tr("Results appear here after an evaluation completes");
+    in-out property <string> report-duration-label: "";
+    in-out property <string> report-meta-line: "";
+    in-out property <int> rep-score-kind: 0;
+    in-out property <string> rep-grade: "";
+    in-out property <int> rep-grade-kind: 0;
+    in-out property <[QuantItem]> rep-quants;
+    in-out property <[ZoneRect]> rep-zones;
+    in-out property <[SegLine]> rep-grid;
+    in-out property <[SegLine]> rep-vgrid;
+    in-out property <[AxisLabel]> rep-ylabels;
+    in-out property <[AxisLabel]> rep-xlabels;
+    in-out property <[GuideLine]> rep-guides;
+    in-out property <string> rep-path;
+    in-out property <[MarkerDot]> rep-markers;
+    in-out property <[HeatCell]> rep-strip;
+    in-out property <float> rep-strip-frame-w: 0;
+    in-out property <[SegRow]> rep-segs;
+    in-out property <[HistoBar]> hist-bars;
+    in-out property <[AxisLabel]> hist-labels;
+    in-out property <[LegendDot]> hist-legend;
+    in-out property <string> hist-summary: "";
+    // hover tooltip on the report chart
+    in-out property <bool> hov-visible: false;
+    in-out property <float> hov-x-frac: 0;
+    in-out property <float> hov-y-frac: 0;
+    in-out property <string> hov-title: "";
+    in-out property <string> hov-value: "";
+    in-out property <string> hov-band: "";
+    in-out property <int> hov-kind: 0;
+    // located frame highlight (pulsing ring)
+    in-out property <bool> hl-visible: false;
+    in-out property <float> hl-x-frac: 0;
+    in-out property <float> hl-y-frac: 0;
+    // The report was opened from the compare screen, which it links back to.
+    in-out property <bool> report-from-compare: false;
+
+    // ---- Compare screen ----
+    // The set-up step replaces the comparison while it is open.
+    in-out property <bool> cmp-setup-open: false;
+    in-out property <bool> cmp-live: false; // videos of the comparison are being evaluated
+    in-out property <string> cmp-progress: ""; // how many videos are still being evaluated
+    in-out property <bool> cmp-queue-paused: false; // they wait for the paused task queue
+    in-out property <bool> compare-available: false;
+    in-out property <string> compare-description: @tr("Compare several encodes of the same reference video side by side");
+    in-out property <string> cmp-reference: ""; // file name of the compared reference
+    in-out property <[CmpTrack]> cmp-tracks;
+    in-out property <[CmpCandidate]> cmp-candidates;
+    in-out property <[string]> cmp-notes; // caveats about the data, e.g. estimated bitrates
+    in-out property <[string]> cmp-insights; // plain-language takeaways
+    in-out property <[ZoneRect]> cmp-zones;
+    in-out property <[SegLine]> cmp-grid;
+    in-out property <[SegLine]> cmp-vgrid;
+    in-out property <[AxisLabel]> cmp-ylabels;
+    in-out property <[AxisLabel]> cmp-xlabels;
+    in-out property <[GuideLine]> cmp-guides;
+    in-out property <[SeriesPath]> cmp-series;
+    // hover tooltip on the compare chart
+    in-out property <bool> cmp-hov-visible: false;
+    in-out property <float> cmp-hov-x-frac: 0;
+    in-out property <string> cmp-hov-title: "";
+    in-out property <[CmpHoverRow]> cmp-hov-rows;
+    // rate-distortion chart
+    in-out property <bool> rd-available: false;
+    in-out property <[SegLine]> rd-grid;
+    in-out property <[AxisLabel]> rd-ylabels;
+    in-out property <[AxisLabel]> rd-xlabels;
+    in-out property <string> rd-guide-dash;
+    in-out property <string> rd-guide-label;
+    in-out property <float> rd-guide-label-x: 0;
+    in-out property <float> rd-guide-label-y: 0;
+    in-out property <string> rd-line-dash;
+    in-out property <[RdPoint]> rd-points;
+    // set-up step: one reference and the videos to compare with it
+    in-out property <bool> cmps-editing: false; // changing the current comparison
+    in-out property <bool> cmps-can-cancel: false;
+    in-out property <bool> cmps-reference-selected: false;
+    in-out property <string> cmps-reference-name: "";
+    in-out property <string> cmps-reference-details: "";
+    in-out property <int> cmps-reference-kind: 0; // 0 = checking, 1 = ready, 2 = cannot be read
+    in-out property <[CmpSetupRow]> cmps-rows;
+    in-out property <bool> cmps-ready: false;
+    in-out property <string> cmps-status: "";
+    in-out property <int> cmps-status-kind: 0; // 0 = neutral, 1 = ready, 2 = blocked
+    in-out property <string> cmps-start-label: "";
+
+    // ---- Settings ----
+    in-out property <int> settings-tab: 0;
+    in-out property <bool> advanced-decode-open: false;
+    // UI order: auto, hardware, software. Persist stable names, not indices.
+    in-out property <int> decode-idx: 0;
+    in-out property <int> decode-backend-idx: 0;
+    in-out property <int> decode-transfer-idx: 0;
+    in-out property <string> decode-device-id: "same";
+    in-out property <int> decode-device-idx: 0;
+    in-out property <[string]> decode-device-options: [@tr("Same as compute GPU")];
+    callback decode-device-changed(int);
+    in-out property <[string]> decode-backend-options: [@tr("Automatic"), "Vulkan Video", "Intel QSV", "NVIDIA NVDEC", "VA-API"];
+    in-out property <string> decode-device-status: @tr("Device capabilities are confirmed when a video is opened.");
+    in-out property <int> decoder-threads: 0;
+    in-out property <int> decode-buffer: 4;
+    in-out property <int> queue-failure-idx: 0;
+    in-out property <string> reports-directory;
+    in-out property <string> settings-status: @tr("Changes are saved automatically");
+    in-out property <bool> settings-save-error: false;
+    in-out property <int> theme-idx: 0;
+    in-out property <[string]> device-options: [
+        @tr("Automatic (recommended)"),
+    ];
+    in-out property <int> device-idx: 0;
+    in-out property <int> export-idx: 0;
+    in-out property <bool> notify-enabled: false;
+    // 0 = follow the system; the other rows come from i18n/language.cpp.
+    in-out property <[string]> lang-options: [@tr("Follow system"), "简体中文", "English"];
+    in-out property <int> lang-idx: 0;
+    in-out property <bool> self-test-busy: false;
+    in-out property <string> self-test-status: @tr("Self-test not run");
+    in-out property <int> self-test-kind: 0;
+
+    // ---- Recent evaluations ----
+    in-out property <[RecentItem]> recent;
+    in-out property <bool> recent-has-more: false;
+
+    // Shared feedback line for export and unavailable actions.
+    in-out property <bool> action-message-visible: false;
+    in-out property <string> action-message: "";
+    in-out property <int> action-message-kind: 0;
+
+    // ---- Callbacks implemented in C++ ----
+    callback nav-to(int);
+    callback choose-reference();
+    callback choose-distorted();
+    callback start-run();
+    callback add-to-queue();
+    callback cancel-run();
+    callback queue-start();
+    callback queue-pause();
+    callback queue-action(int);
+    callback select-recent(int);
+    callback reuse-recent(int);
+    callback delete-recent(int);
+    callback load-more-recent();
+    callback report-hover(float, float, float, float); // x, y, w, h (physical)
+    callback report-hover-end();
+    // Compare callbacks take CmpTrack.track.
+    callback toggle-cmp-series(int);
+    callback set-cmp-baseline(int);
+    callback remove-cmp-track(int);
+    callback retry-cmp-track(int);
+    callback open-cmp-track(int); // the evaluation's report
+    callback stop-comparison(); // stop the videos still waiting or being evaluated
+    callback edit-comparison();
+    callback new-comparison();
+    callback cmp-hover(float, float); // x, width (logical)
+    callback cmp-hover-end();
+    // Compare set-up step; rows are cmps-rows indices, saved ones cmp-candidates indices.
+    callback cmps-choose-reference();
+    callback cmps-add-files();
+    callback cmps-remove-row(int);
+    callback cmps-toggle-reuse(int);
+    callback cmps-add-saved(int);
+    callback cmps-start();
+    callback cmps-cancel();
+    // Entry points into the set-up step from other screens.
+    callback compare-report(); // the displayed report with other encodes
+    callback compare-from-new(); // the New screen's reference
+    callback locate-frame(int);
+    callback export-report(int); // 0 = JSON, 1 = CSV, 2 = diagnostics bundle
+    callback export-comparison();
+    callback generate-pdf();
+    callback run-self-test();
+    callback settings-changed();
+    callback language-changed();
+    callback settings-device-changed();
+    callback open-reports-directory();
+    callback export-run-diagnostics();
+}

@@ -1,0 +1,65 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer ReducedSums {
+    uvec2 values[];
+} reduced_sums;
+layout(set = 0, binding = 1, std430) writeonly buffer Results {
+    uvec2 values[];
+} results;
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+layout(set = 0, binding = 2, std430) readonly buffer WaveSlots {
+    uvec2 entries[];
+} wave_slots;
+#endif
+
+layout(push_constant) uniform Parameters {
+    uint scale;
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+    uint input_task_stride_elements;
+    uint input_scale_offset_elements;
+    uint input_channel_stride_elements;
+    uint result_task_stride_elements;
+#else
+    uint channel_capacity;
+#endif
+} parameters;
+
+uvec2 reduced(uint channel, uint task_slot) {
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+    const uint input_index =
+        task_slot * parameters.input_task_stride_elements +
+        parameters.input_scale_offset_elements +
+        channel * parameters.input_channel_stride_elements;
+#else
+    const uint input_index = channel * parameters.channel_capacity;
+#endif
+    return reduced_sums.values[input_index];
+}
+
+void main() {
+    const uint local_index = gl_LocalInvocationIndex;
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+    const uint task_slot = wave_slots.entries[gl_WorkGroupID.z].x;
+    const uint output_base =
+        task_slot * parameters.result_task_stride_elements + 13u +
+        parameters.scale * 24u;
+#else
+    const uint task_slot = 0u;
+    const uint output_base = 13u + parameters.scale * 24u;
+#endif
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+    if (local_index < 9u) {
+        results.values[output_base + local_index] =
+            reduced(local_index, task_slot);
+    }
+#else
+    results.values[output_base + local_index] =
+        reduced(local_index, task_slot);
+    if (local_index < 8u) {
+        results.values[output_base + local_index + 16u] =
+            reduced(local_index + 16u, task_slot);
+    }
+#endif
+}

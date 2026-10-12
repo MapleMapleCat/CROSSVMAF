@@ -1,0 +1,73 @@
+// Common saved-result content. Pages supply trailing actions and own row clicks.
+import { Theme } from "../theme.slint";
+
+export component ResultItem inherits HorizontalLayout {
+    in property <string> name;
+    in property <string> details;
+    in property <string> scene;
+    in property <length> scene-width: 0px;
+    in property <string> score;
+    in property <bool> show-icon: true;
+    in property <length> text-spacing: 4px;
+    in property <length> name-font-size: 12.5px;
+    in property <int> name-font-weight: 500;
+    in property <color> details-color: Theme.text2;
+    in property <length> score-width: 78px;
+    in property <length> score-font-size: 15px;
+    in property <int> score-font-weight: 600;
+    in property <color> score-color: Theme.text;
+    in property <TextHorizontalAlignment> score-alignment: left;
+    padding-left: 18px;
+    padding-right: 12px;
+    spacing: 18px;
+
+    HorizontalLayout {
+        min-width: 0px;
+        spacing: 15px;
+        if root.show-icon: VerticalLayout {
+            width: 22px;
+            alignment: center;
+            Image { source: @image-url("../icons/file.svg"); height: 25px; colorize: Theme.text2; }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: root.text-spacing;
+            min-width: 0px;
+            Text {
+                text: root.name;
+                font-family: Theme.mono-font;
+                font-size: root.name-font-size;
+                font-weight: root.name-font-weight;
+                color: Theme.text;
+                min-width: 0px;
+                overflow: elide;
+            }
+            Text {
+                text: root.details;
+                font-size: 11px;
+                color: root.details-color;
+                min-width: 0px;
+                overflow: elide;
+            }
+        }
+    }
+    if root.scene-width > 0px: Text {
+        text: root.scene;
+        width: root.scene-width;
+        overflow: elide;
+        font-size: 12px;
+        color: Theme.text;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.score;
+        width: root.score-width;
+        font-family: Theme.mono-font;
+        font-size: root.score-font-size;
+        font-weight: root.score-font-weight;
+        color: root.score-color;
+        horizontal-alignment: root.score-alignment;
+        vertical-alignment: center;
+    }
+    @children
+}

@@ -1,0 +1,501 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer ReferenceDetail {
+    uint values[];
+} reference_detail;
+layout(set = 0, binding = 1, std430) readonly buffer RestoredDetail {
+    uint values[];
+} restored_detail;
+layout(set = 0, binding = 2, std430) readonly buffer AdditiveDetail {
+    uint values[];
+} additive_detail;
+layout(set = 0, binding = 3, std430) writeonly buffer MetricPartials {
+    uvec2 values[];
+} metric_partials;
+
+layout(push_constant) uniform Parameters {
+    uint width;
+    uint height;
+    uint scale;
+    uint horizontal_factor_raw;
+    uint diagonal_factor_raw;
+    uint row_capacity;
+    uint segment_capacity;
+    uint segments_per_workgroup;
+} parameters;
+
+const uint segment_width = 32u;
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+const uint score_family_count = 3u;
+const uint score_band_count = 3u;
+const uint score_channel_count = score_family_count * score_band_count;
+#else
+const uint family_count = 8u;
+#endif
+const uint threshold_tile_rows = 3u;
+const uint threshold_tile_columns = segment_width + 2u;
+const uint threshold_tile_element_count =
+    threshold_tile_rows * threshold_tile_columns;
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+const uint restored_neighbor_workspace_offset = 0u;
+const uint restored_center_workspace_offset = threshold_tile_element_count;
+const uint additive_neighbor_workspace_offset =
+    threshold_tile_element_count * 2u;
+const uint additive_center_workspace_offset =
+    threshold_tile_element_count * 3u;
+shared uvec2 metric_workspace[score_channel_count * segment_width];
+#else
+shared uvec2 family_values[family_count][segment_width];
+shared uint restored_neighbor_contributions[threshold_tile_element_count];
+shared uint restored_center_contributions[threshold_tile_element_count];
+shared uint additive_neighbor_contributions[threshold_tile_element_count];
+shared uint additive_center_contributions[threshold_tile_element_count];
+#endif
+
+uint magnitude_i32(int value) {
+    return value < 0 ? uint(-(value + 1)) + 1u : uint(value);
+}
+
+uint ceil_log2_u32(uint value) {
+    return value <= 1u ? 0u : uint(findMSB(value - 1u) + 1);
+}
+
+uint border_start(uint size) {
+    return size < 5u ? 0u : (size - 5u) / 10u;
+}
+
+int threshold_mirror(int coordinate, int size) {
+    if (size <= 1) return 0;
+    if (coordinate < 0) return -coordinate;
+    if (coordinate >= size) return size - 1;
+    return coordinate;
+}
+
+uint factor_for_band(uint band) {
+    return band == 2u
+        ? parameters.diagonal_factor_raw
+        : parameters.horizontal_factor_raw;
+}
+
+int csf_scaled(int value, uint band) {
+    const uint raw_factor = factor_for_band(band);
+    uvec2 product;
+    uint shift;
+    uint rounding;
+    if (parameters.scale == 0u) {
+        const uint factor_bits = band == 2u ? 23u : 21u;
+        const uint factor = raw_factor >> (32u - factor_bits);
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+        const int product_narrow = value * int(factor) +
+            int(band == 2u ? 65535u : 16384u);
+        return product_narrow >> (band == 2u ? 17u : 15u);
+#else
+        product = cv_i64_multiply_i32_u32(value, factor);
+        shift = band == 2u ? 17u : 15u;
+        rounding = band == 2u ? 65535u : 16384u;
+#endif
+    } else {
+        product = cv_i64_multiply_i32_u32(value, raw_factor);
+        shift = 28u;
+        rounding = 1u << 27u;
+    }
+    product = cv_u64_add(product, uvec2(rounding, 0u));
+    return int(cv_i64_arithmetic_shift_right(product, shift).x);
+}
+
+int filtered_magnitude(uint absolute, bool center) {
+    if (parameters.scale == 0u) {
+        const uint factor = center ? 8738u : 4369u;
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+        return int((factor * absolute + 2048u) >> 12u);
+#else
+        uvec2 product = cv_u32_multiply(factor, absolute);
+        product = cv_u64_add(product, uvec2(2048u, 0u));
+        return int(cv_i64_arithmetic_shift_right(product, 12u).x);
+#endif
+    }
+    const uint factor = center ? 286331153u : 143165577u;
+    uvec2 product = cv_u32_multiply(factor, absolute);
+    product = cv_u64_subtract(product, uvec2(0x80000000u, 0u));
+    return int(cv_i64_arithmetic_shift_right(product, 32u).x);
+}
+
+int filtered_value(int scaled, bool center) {
+    return filtered_magnitude(magnitude_i32(scaled), center);
+}
+
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+uint csf_scaled_magnitude(uint magnitude, uint band) {
+    const uint raw_factor = factor_for_band(band);
+    if (parameters.scale == 0u) {
+        const uint factor_bits = band == 2u ? 23u : 21u;
+        const uint factor = raw_factor >> (32u - factor_bits);
+        const uint rounding = band == 2u ? 65535u : 16384u;
+        return (magnitude * factor + rounding) >>
+            (band == 2u ? 17u : 15u);
+    }
+
+    uvec2 product = cv_u32_multiply(magnitude, raw_factor);
+    product = cv_u64_add(product, uvec2(1u << 27u, 0u));
+    return cv_u64_shift_right(product, 28u).x;
+}
+
+void write_workspace_uint(uint workspace_uint_index, uint value) {
+    metric_workspace[workspace_uint_index >> 1u]
+                    [workspace_uint_index & 1u] = value;
+}
+
+uint read_workspace_uint(uint workspace_uint_index) {
+    return metric_workspace[workspace_uint_index >> 1u]
+                           [workspace_uint_index & 1u];
+}
+
+void store_threshold_workspace(
+    uint tile_index, uint restored_neighbor, uint restored_center,
+    uint additive_neighbor, uint additive_center) {
+    write_workspace_uint(
+        restored_neighbor_workspace_offset + tile_index,
+        restored_neighbor);
+    write_workspace_uint(
+        restored_center_workspace_offset + tile_index,
+        restored_center);
+    write_workspace_uint(
+        additive_neighbor_workspace_offset + tile_index,
+        additive_neighbor);
+    write_workspace_uint(
+        additive_center_workspace_offset + tile_index,
+        additive_center);
+}
+
+uvec2 read_score_channel(uint channel, uint lane) {
+    return metric_workspace[channel * segment_width + lane];
+}
+
+void write_score_channel(uint channel, uint lane, uvec2 value) {
+    metric_workspace[channel * segment_width + lane] = value;
+}
+#endif
+
+void stage_threshold_contributions(uint output_row, uint segment_left) {
+    const uint local_index = gl_LocalInvocationIndex;
+    for (uint tile_index = local_index;
+         tile_index < threshold_tile_element_count;
+         tile_index += gl_WorkGroupSize.x) {
+        const uint tile_row = tile_index / threshold_tile_columns;
+        const uint tile_column =
+            tile_index - tile_row * threshold_tile_columns;
+        const int source_row = threshold_mirror(
+            int(output_row) + int(tile_row) - 1,
+            int(parameters.height));
+        const int source_column = threshold_mirror(
+            int(segment_left) + int(tile_column) - 1,
+            int(parameters.width));
+        const uint pixel = uint(source_row) * parameters.width +
+                           uint(source_column);
+
+        uint restored_neighbor = 0u;
+        uint restored_center = 0u;
+        uint additive_neighbor = 0u;
+        uint additive_center = 0u;
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+        const uint first_detail_index = pixel * score_band_count;
+        const uint restored_horizontal_vertical =
+            magnitude_i32(int(restored_detail.values[first_detail_index])) +
+            magnitude_i32(int(restored_detail.values[first_detail_index + 1u]));
+        const uint additive_horizontal_vertical =
+            magnitude_i32(int(additive_detail.values[first_detail_index])) +
+            magnitude_i32(int(additive_detail.values[first_detail_index + 1u]));
+        const uint restored_total_magnitude = csf_scaled_magnitude(
+            restored_horizontal_vertical, 0u) + csf_scaled_magnitude(
+                magnitude_i32(int(
+                    restored_detail.values[first_detail_index + 2u])),
+                2u);
+        const uint additive_total_magnitude = csf_scaled_magnitude(
+            additive_horizontal_vertical, 0u) + csf_scaled_magnitude(
+                magnitude_i32(int(
+                    additive_detail.values[first_detail_index + 2u])),
+                2u);
+        restored_neighbor = uint(filtered_magnitude(
+            restored_total_magnitude, false));
+        restored_center = uint(filtered_magnitude(
+            restored_total_magnitude, true));
+        additive_neighbor = uint(filtered_magnitude(
+            additive_total_magnitude, false));
+        additive_center = uint(filtered_magnitude(
+            additive_total_magnitude, true));
+#else
+        for (uint band = 0u; band < 3u; ++band) {
+            const uint detail_index = pixel * 3u + band;
+            const int restored_scaled = csf_scaled(
+                int(restored_detail.values[detail_index]), band);
+            const int additive_scaled = csf_scaled(
+                int(additive_detail.values[detail_index]), band);
+            restored_neighbor += uint(filtered_value(restored_scaled, false));
+            restored_center += uint(filtered_value(restored_scaled, true));
+            additive_neighbor += uint(filtered_value(additive_scaled, false));
+            additive_center += uint(filtered_value(additive_scaled, true));
+        }
+#endif
+
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+        store_threshold_workspace(
+            tile_index, restored_neighbor, restored_center,
+            additive_neighbor, additive_center);
+#else
+        restored_neighbor_contributions[tile_index] = restored_neighbor;
+        restored_center_contributions[tile_index] = restored_center;
+        additive_neighbor_contributions[tile_index] = additive_neighbor;
+        additive_center_contributions[tile_index] = additive_center;
+#endif
+    }
+}
+
+int staged_masking_threshold(bool restored_mask, uint local_column) {
+    uint threshold_bits = 0u;
+    for (uint tile_row = 0u; tile_row < threshold_tile_rows; ++tile_row) {
+        for (uint column_offset = 0u; column_offset < 3u;
+             ++column_offset) {
+            const uint tile_index = tile_row * threshold_tile_columns +
+                                    local_column + column_offset;
+            const bool center = tile_row == 1u && column_offset == 1u;
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+            const uint workspace_offset = restored_mask
+                ? (center ? restored_center_workspace_offset
+                          : restored_neighbor_workspace_offset)
+                : (center ? additive_center_workspace_offset
+                          : additive_neighbor_workspace_offset);
+            threshold_bits += read_workspace_uint(
+                workspace_offset + tile_index);
+#else
+            threshold_bits += restored_mask
+                ? (center ? restored_center_contributions[tile_index]
+                          : restored_neighbor_contributions[tile_index])
+                : (center ? additive_center_contributions[tile_index]
+                          : additive_neighbor_contributions[tile_index]);
+#endif
+        }
+    }
+    return int(threshold_bits);
+}
+
+uvec2 denominator_contribution(int source, uint region_width) {
+    const uint absolute = magnitude_i32(source);
+    if (parameters.scale == 0u) {
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+        const uint square = absolute * absolute;
+#else
+        const uvec2 square_wide = cv_u32_multiply(absolute, absolute);
+        const uint square = square_wide.x;
+#endif
+        return cv_u32_multiply(square, absolute);
+    }
+    const uint shifts[3] = uint[3](31u, 30u, 31u);
+    const uint square_shift = shifts[parameters.scale - 1u];
+    uvec2 square_wide = cv_u32_multiply(absolute, absolute);
+    square_wide = cv_u64_add(
+        square_wide, cv_u64_shift_left(uvec2(1u, 0u), square_shift));
+    const uint square = cv_u64_shift_right(square_wide, square_shift).x;
+    uvec2 cube = cv_u32_multiply(square, absolute);
+    const uint cube_shift = ceil_log2_u32(region_width);
+    cube = cv_u64_add(
+        cube, cv_u64_shift_left(uvec2(1u, 0u), cube_shift - 1u));
+    return cv_u64_shift_right(cube, cube_shift);
+}
+
+uvec2 numerator_contribution(int source, int threshold, uint band) {
+    int x;
+    uint square_shift;
+    uint square_round_shift;
+    uint cube_shift;
+    if (parameters.scale == 0u) {
+        const uint factor_bits = band == 2u ? 23u : 21u;
+        const uint factor = factor_for_band(band) >> (32u - factor_bits);
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+        const uint absolute = magnitude_i32(source * int(factor));
+#else
+        const uvec2 weighted = cv_i64_multiply_i32_u32(source, factor);
+        const uint absolute = cv_i64_magnitude(weighted).x;
+#endif
+        const uint threshold_shift = band == 2u ? 12u : 10u;
+        x = int(absolute) - (threshold << threshold_shift);
+        square_shift = band == 2u ? 30u : 29u;
+        square_round_shift = square_shift - 1u;
+        cube_shift = ceil_log2_u32(parameters.width) -
+                     (band == 2u ? 3u : 4u);
+    } else {
+        x = int(magnitude_i32(csf_scaled(source, band))) - threshold;
+        square_shift = 30u;
+        square_round_shift = 29u;
+        cube_shift = ceil_log2_u32(parameters.width);
+    }
+    if (x <= 0) return uvec2(0u);
+    const uint unsigned_x = uint(x);
+    uvec2 square_wide = cv_u32_multiply(unsigned_x, unsigned_x);
+    square_wide = cv_u64_add(
+        square_wide,
+        cv_u64_shift_left(uvec2(1u, 0u), square_round_shift));
+    const uint square = cv_u64_shift_right(square_wide, square_shift).x;
+    uvec2 cube = cv_u32_multiply(square, unsigned_x);
+    cube = cv_u64_add(
+        cube, cv_u64_shift_left(uvec2(1u, 0u), cube_shift - 1u));
+    return cv_u64_shift_right(cube, cube_shift);
+}
+
+void store_partial(
+    uint family, uint band, uint row_index, uint segment_index,
+    uvec2 value) {
+    const uint channel = family * 3u + band;
+    const uint index =
+        channel * parameters.row_capacity * parameters.segment_capacity +
+        row_index * parameters.segment_capacity + segment_index;
+    metric_partials.values[index] = value;
+}
+
+void process_segment(
+    uint segment_index, uint row_index, uint left, uint top,
+    uint right, uint region_width, uint region_height) {
+    const uint local_index = gl_LocalInvocationIndex;
+    const uint row = top + row_index;
+    const uint segment_left = left + segment_index * segment_width;
+    const uint column = segment_left + local_index;
+    const bool valid = row_index < region_height && column < right;
+
+    stage_threshold_contributions(row, segment_left);
+    barrier();
+
+    uint pixel = 0u;
+    uint weight = 0u;
+    int dlm_threshold = 0;
+    int aim_threshold = 0;
+    if (valid) {
+        pixel = row * parameters.width + column;
+        weight = pixel + 1u;
+        dlm_threshold = staged_masking_threshold(false, local_index);
+        aim_threshold = staged_masking_threshold(true, local_index);
+    }
+
+#if defined(CROSSVMAF_ADM3_SCORE_ONLY)
+    // Every lane must finish reading threshold data before the workspace is
+    // repurposed as the nine-channel reduction tree.
+    barrier();
+    for (uint band = 0u; band < 3u; ++band) {
+        uvec2 contributions[score_family_count] =
+            uvec2[score_family_count](uvec2(0u), uvec2(0u), uvec2(0u));
+        if (valid) {
+            const uint detail_index = pixel * 3u + band;
+            contributions[0] = denominator_contribution(
+                int(reference_detail.values[detail_index]), region_width);
+            contributions[1] = numerator_contribution(
+                int(restored_detail.values[detail_index]),
+                dlm_threshold, band);
+            contributions[2] = numerator_contribution(
+                int(additive_detail.values[detail_index]),
+                aim_threshold, band);
+        }
+
+        for (uint family = 0u; family < score_family_count; ++family) {
+            const uint channel = family * score_band_count + band;
+            write_score_channel(channel, local_index, contributions[family]);
+        }
+    }
+    barrier();
+    for (uint stride = segment_width >> 1u; stride > 0u;
+         stride >>= 1u) {
+        if (local_index < stride) {
+            for (uint channel = 0u; channel < score_channel_count;
+                 ++channel) {
+                const uvec2 reduced_value = cv_u64_add(
+                    read_score_channel(channel, local_index),
+                    read_score_channel(channel, local_index + stride));
+                if (stride == 1u) {
+                    const uint family = channel / score_band_count;
+                    const uint band = channel - family * score_band_count;
+                    store_partial(
+                        family, band, row_index, segment_index,
+                        reduced_value);
+                } else {
+                    write_score_channel(
+                        channel, local_index, reduced_value);
+                }
+            }
+        }
+        barrier();
+    }
+#else
+    for (uint band = 0u; band < 3u; ++band) {
+        uvec2 contributions[8] = uvec2[8](
+            uvec2(0u), uvec2(0u), uvec2(0u), uvec2(0u),
+            uvec2(0u), uvec2(0u), uvec2(0u), uvec2(0u));
+        if (valid) {
+            const uint detail_index = pixel * 3u + band;
+            const uint reference_bits = reference_detail.values[detail_index];
+            const uint restored_bits = restored_detail.values[detail_index];
+            const uint additive_bits = additive_detail.values[detail_index];
+            contributions[0] = denominator_contribution(
+                int(reference_bits), region_width);
+            contributions[1] = numerator_contribution(
+                int(restored_bits), dlm_threshold, band);
+            contributions[2] = numerator_contribution(
+                int(additive_bits), aim_threshold, band);
+            contributions[3] = cv_i64_from_i32(int(reference_bits));
+            contributions[4] = cv_i64_from_i32(int(restored_bits));
+            contributions[5] = cv_i64_from_i32(int(additive_bits));
+            contributions[6] = cv_u32_multiply(reference_bits, weight);
+            contributions[7] = cv_u32_multiply(
+                restored_bits + additive_bits, weight);
+        }
+
+        for (uint family = 0u; family < family_count; ++family) {
+            family_values[family][local_index] = contributions[family];
+        }
+        barrier();
+        for (uint stride = segment_width >> 1u; stride > 0u;
+             stride >>= 1u) {
+            if (local_index < stride) {
+                for (uint family = 0u; family < family_count; ++family) {
+                    family_values[family][local_index] = cv_u64_add(
+                        family_values[family][local_index],
+                        family_values[family][local_index + stride]);
+                }
+            }
+            barrier();
+        }
+        if (local_index == 0u) {
+            for (uint family = 0u; family < family_count; ++family) {
+                store_partial(
+                    family, band, row_index, segment_index,
+                    family_values[family][0]);
+            }
+        }
+    }
+#endif
+}
+
+void main() {
+    const uint left = border_start(parameters.width);
+    const uint top = border_start(parameters.height);
+    const uint right = parameters.width - left;
+    const uint bottom = parameters.height - top;
+    const uint region_width = right - left;
+    const uint region_height = bottom - top;
+    const uint segment_count =
+        (region_width + segment_width - 1u) / segment_width;
+    const uint first_segment =
+        gl_WorkGroupID.x * parameters.segments_per_workgroup;
+    const uint row_index = gl_WorkGroupID.y;
+
+    for (uint segment_offset = 0u;
+         segment_offset < parameters.segments_per_workgroup;
+         ++segment_offset) {
+        const uint segment_index = first_segment + segment_offset;
+        if (segment_index >= segment_count) break;
+        process_segment(
+            segment_index, row_index, left, top, right,
+            region_width, region_height);
+    }
+}

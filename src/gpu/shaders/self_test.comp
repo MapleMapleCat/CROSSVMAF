@@ -1,0 +1,102 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer SelfTestBuffer {
+    uint words[];
+} self_test;
+
+const uint kCaseCount = 96u;
+const uint kWordsPerCase = 12u;
+
+bool validate_u128_divrem(
+    uvec4 numerator, uvec4 quotient, uint remainder,
+    uint denominator) {
+    if (denominator == 0u || remainder >= denominator) return false;
+
+    uvec4 restored;
+    uint carry = remainder;
+    bool overflow = false;
+    for (uint limb_index = 0u; limb_index < 4u; ++limb_index) {
+        uint product_high;
+        uint product_low;
+        umulExtended(
+            quotient[limb_index], denominator,
+            product_high, product_low);
+        restored[limb_index] = product_low + carry;
+        const uint addition_carry =
+            restored[limb_index] < product_low ? 1u : 0u;
+        carry = product_high + addition_carry;
+        overflow = overflow || carry < product_high;
+    }
+    return !overflow && carry == 0u && all(equal(restored, numerator));
+}
+
+void main() {
+    const uint case_index = gl_GlobalInvocationID.x;
+    if (case_index >= kCaseCount) {
+        return;
+    }
+
+    const uint base = case_index * kWordsPerCase;
+    const uint operation = self_test.words[base];
+    const uvec2 lhs = uvec2(self_test.words[base + 2u], self_test.words[base + 3u]);
+    const uvec2 rhs = uvec2(self_test.words[base + 4u], self_test.words[base + 5u]);
+    uvec2 result = uvec2(0u);
+    bool success = true;
+    if (operation == 0u) {
+        result = cv_q32_add_saturating(lhs, rhs);
+    } else if (operation == 1u) {
+        result = cv_q32_subtract_saturating(lhs, rhs);
+    } else if (operation == 2u) {
+        result = cv_q32_multiply_rne(lhs, rhs);
+    } else if (operation == 3u) {
+        success = cv_q32_divide_rne(lhs, rhs, result);
+    } else if (operation == 4u) {
+        success = cv_q32_sqrt_rne(lhs, result);
+    } else if (operation == 5u) {
+        success = cv_q32_log2(lhs, result);
+    } else if (operation == 6u) {
+        result = cv_q32_exp2(lhs);
+    } else if (operation == 7u) {
+        success = cv_q32_cbrt(lhs, result);
+    } else if (operation == 8u) {
+        result = cv_q32_average_rne(lhs, rhs);
+    } else if (operation == 9u) {
+        result = cv_q48_norm2_binary32(lhs, rhs);
+    } else if (operation == 10u) {
+        result = cv_i64_half_difference_rne_binary32(lhs, rhs);
+    } else if (operation == 11u) {
+        success = cv_q48_divide_rne_base16(lhs, rhs, result);
+    } else if (operation == 12u) {
+        const CvPreparedU32Divider divider = CvPreparedU32Divider(
+            self_test.words[base + 6u],
+            self_test.words[base + 7u],
+            self_test.words[base + 8u],
+            self_test.words[base + 9u]);
+        success = divider.denominator != 0u;
+        if (success) {
+            result = cv_u64_divide_u32_prepared_rne(lhs, divider);
+        }
+    } else if (operation == 14u) {
+        const CvPreparedU32Divider divider = CvPreparedU32Divider(
+            self_test.words[base + 6u],
+            self_test.words[base + 7u],
+            self_test.words[base + 8u],
+            self_test.words[base + 9u]);
+        uint remainder;
+        const uvec4 numerator = uvec4(lhs, rhs);
+        const uvec4 quotient = cv_u128_divide_u32_prepared_floor(
+            numerator, divider, remainder);
+        success = validate_u128_divrem(
+            numerator, quotient, remainder, divider.denominator);
+    } else {
+        success = false;
+    }
+    self_test.words[base + 1u] = success ? 1u : 0u;
+    self_test.words[base + 10u] = result.x;
+    self_test.words[base + 11u] = result.y;
+}

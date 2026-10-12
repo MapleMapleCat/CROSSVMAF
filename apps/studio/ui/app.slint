@@ -1,0 +1,302 @@
+import { Palette, ScrollView } from "std-widgets.slint";
+import { SoftwareVersion } from "@crossvmaf-version";
+// CrossVMAF Studio main window.
+import { Theme } from "theme.slint";
+import { Layout, PageHost } from "layout.slint";
+import { VM } from "models/app_state.slint";
+import { Logo } from "components/display.slint";
+import { NewScreen } from "screens/new.slint";
+import { RunScreen } from "screens/run.slint";
+import { ReportScreen } from "screens/report.slint";
+import { CompareScreen } from "screens/compare.slint";
+import { SettingsScreen } from "screens/settings.slint";
+
+export { VM, SoftwareVersion }
+
+// Title-bar window button (.wbtn).
+component WBtn inherits Rectangle {
+    in property <image> icon;
+    in property <bool> close: false;
+    callback clicked();
+    width: 46px;
+    height: 42px;
+    background: ta.has-hover ? (close ? Theme.close-hover : Theme.bg3) : #00000000;
+    animate background { duration: 120ms; }
+    Image {
+        source: icon;
+        width: 11px;
+        colorize: ta.has-hover ? (close ? #FFFFFF : Theme.text) : Theme.text2;
+        animate colorize { duration: 120ms; }
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component NavItem inherits Rectangle {
+    in property <image> icon;
+    in property <string> text;
+    in property <bool> active: false;
+    in property <bool> live: false;
+    callback clicked();
+    property <bool> hov: ta.has-hover;
+    height: 38px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: active ? Theme.accent-line : #00000000;
+    background: active ? Theme.accent-soft : hov ? Theme.bg2 : #00000000;
+    animate background, border-color { duration: Theme.selection-transition; easing: ease-out; }
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 11px;
+        Image {
+            source: icon;
+            width: 17px;
+            colorize: active ? Theme.accent : hov ? Theme.text : Theme.text2;
+            animate colorize { duration: Theme.selection-transition; easing: ease-out; }
+        }
+        Text {
+            text: root.text;
+            font-size: 12.5px;
+            font-weight: Theme.selection-label-weight;
+            color: active ? Theme.accent : hov ? Theme.text : Theme.text2;
+            animate color { duration: Theme.selection-transition; easing: ease-out; }
+            vertical-alignment: center;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        if live: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: Theme.excellent;
+            }
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component StudioApp inherits Window {
+    title: "CrossVMAF Studio";
+    no-frame: true;
+    resize-border-width: 6px;
+    background: Theme.bg0;
+    default-font-family: "Inter";
+    default-font-size: 13px;
+    // Logical pixels; Windows further limits startup size to its work area.
+    in property <length> initial-width: 1200px;
+    in property <length> initial-height: 760px;
+    preferred-width: initial-width;
+    preferred-height: initial-height;
+    min-width: min(Layout.window-min-width, initial-width);
+    min-height: min(Layout.window-min-height, initial-height);
+
+    // theme switching is stored in VM.theme-idx
+    property <int> theme-idx: VM.theme-idx;
+    changed theme-idx => { Theme.dark = theme-idx == 0; Palette.color-scheme = theme-idx == 0 ? ColorScheme.dark : ColorScheme.light; }
+    init => { Palette.color-scheme = theme-idx == 0 ? ColorScheme.dark : ColorScheme.light; }
+    // reset scroll on screen switch
+    property <int> scr: VM.screen;
+    changed scr => { flick.viewport-x = 0; flick.viewport-y = 0; }
+
+    VerticalLayout {
+        // ---------- title bar ----------
+        // NOTE: the 42px height, 46px WBtn width (x3) and the window's 6px
+        // resize-border-width are mirrored in main.cpp's captionDragProc,
+        // which reports HTCAPTION for this bar to make the frameless window
+        // draggable. Keep them in sync when resizing the title bar.
+        Rectangle {
+            height: 42px;
+            background: Theme.bg0;
+            Rectangle {
+                x: 0;
+                y: parent.height - 1px;
+                width: 100%;
+                height: 1px;
+                background: Theme.stroke;
+            }
+            HorizontalLayout {
+                padding-left: 14px;
+                spacing: 9px;
+                VerticalLayout { alignment: center; Logo { } }
+                Text {
+                    text: "CrossVMAF Studio";
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        height: 20px;
+                        width: ver-text.preferred-width + 16px;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: Theme.stroke2;
+                        ver-text := Text {
+                            text: SoftwareVersion.value;
+                            font-family: Theme.mono-font;
+                            font-size: 10.5px;
+                            color: Theme.text3;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                WBtn { icon: @image-url("icons/win-min.svg"); clicked => { root.minimized = true; } }
+                WBtn { icon: @image-url("icons/win-max.svg"); clicked => { root.maximized = !root.maximized; } }
+                WBtn { icon: @image-url("icons/win-close.svg"); close: true; clicked => { root.close(); } }
+            }
+        }
+
+        // ---------- body ----------
+        HorizontalLayout {
+            // navigation rail
+            Rectangle {
+                width: Layout.sidebar-width;
+                background: Theme.bg1;
+                Rectangle {
+                    x: parent.width - 1px;
+                    y: 0;
+                    width: 1px;
+                    height: 100%;
+                    background: Theme.stroke;
+                }
+                VerticalLayout {
+                    padding-top: 14px;
+                    padding-bottom: 14px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 2px;
+                    NavItem { icon: @image-url("icons/nav-new.svg"); text: @tr("New evaluation"); active: VM.screen == 0; clicked => { VM.nav-to(0); } }
+                    NavItem { icon: @image-url("icons/nav-queue.svg"); text: @tr("Task queue"); active: VM.screen == 1; live: VM.nav-live; clicked => { VM.nav-to(1); } }
+                    NavItem { icon: @image-url("icons/nav-report.svg"); text: @tr("Report"); active: VM.screen == 2; clicked => { VM.nav-to(2); } }
+                    NavItem { icon: @image-url("icons/nav-compare.svg"); text: @tr("Compare"); active: VM.screen == 3; live: VM.cmp-live; clicked => { VM.nav-to(3); } }
+                    NavItem { icon: @image-url("icons/nav-settings.svg"); text: @tr("Settings"); active: VM.screen == 4; clicked => { VM.nav-to(4); } }
+                    Rectangle { vertical-stretch: 1; }
+                    // Recent evaluations now live in the main workbench.
+                    VerticalLayout {
+                        vertical-stretch: 0;
+                        spacing: 4px;
+                        Rectangle { height: 8px; }
+                        HorizontalLayout {
+                            padding-left: 11px;
+                            Text {
+                                text: "CrossVMAF Studio " + SoftwareVersion.value;
+                                font-size: 10.5px;
+                                color: Theme.text3;
+                            }
+                        }
+                        HorizontalLayout {
+                            padding-left: 11px;
+                            Text {
+                                text: @tr("Runs locally · no uploads");
+                                font-size: 10.5px;
+                                color: Theme.text3;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // stage
+            Rectangle {
+                background: Theme.bg0;
+                clip: true;
+                flick := ScrollView {
+                    width: 100%;
+                    height: 100%;
+                    vertical-scrollbar-policy: always-off;
+                    mouse-drag-pan-enabled: true;
+                    // Keep dense controls reachable when DPI leaves less logical space.
+                    viewport-width: max(Layout.page-min-width, self.visible-width);
+                    viewport-height: page.height;
+                    page := Rectangle {
+                        x: max(0px, (flick.width - self.width) / 2);
+                        width: VM.screen == 0 ? flick.viewport-width : min(VM.screen == 4 ? Layout.settings-max-width : Layout.page-max-width, flick.viewport-width);
+                        height: (VM.screen == 0 ? scr-new.preferred-height
+                            : VM.screen == 1 ? scr-run.preferred-height
+                            : VM.screen == 2 ? scr-report.preferred-height
+                            : VM.screen == 3 ? scr-compare.preferred-height
+                            : scr-settings.preferred-height) + (VM.screen == 0
+                                ? Layout.workbench-top + Layout.workbench-bottom
+                                : Layout.page-top + Layout.page-bottom);
+
+                        scr-new := PageHost {
+                            viewport-width: page.width;
+                            active: VM.screen == 0;
+                            workbench: true;
+                            NewScreen { }
+                        }
+                        scr-run := PageHost {
+                            viewport-width: page.width;
+                            active: VM.screen == 1;
+                            RunScreen { }
+                        }
+                        scr-report := PageHost {
+                            viewport-width: page.width;
+                            active: VM.screen == 2;
+                            ReportScreen { }
+                        }
+                        scr-compare := PageHost {
+                            viewport-width: page.width;
+                            active: VM.screen == 3;
+                            CompareScreen { }
+                        }
+                        scr-settings := PageHost {
+                            viewport-width: page.width;
+                            active: VM.screen == 4;
+                            SettingsScreen { }
+                        }
+                    }
+                }
+                // custom scrollbar (webkit-style thin)
+                if flick.viewport-height > flick.height + 1px: Rectangle {
+                    x: parent.width - 10px;
+                    y: 0;
+                    width: 10px;
+                    height: 100%;
+                    property <length> track-h: self.height;
+                    property <length> thumb-h: max(30px, track-h * flick.height / flick.viewport-height);
+                    Rectangle {
+                        x: 2px;
+                        width: 6px;
+                        border-radius: 4px;
+                        background: Theme.bg3;
+                        height: thumb-h;
+                        y: -flick.viewport-y / (flick.viewport-height - flick.height) * (track-h - thumb-h);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- window frame ----------
+    // With no-frame the DWM draws no border and no shadow, so on dark
+    // desktops the window edge is indistinguishable from the background.
+    // A themed 1px stroke at the outermost edge restores the outline
+    // (VS Code-style). Hidden when maximized: the window then fills the
+    // screen and the stroke would only sit against the taskbar/screen edge.
+    // No TouchArea, so resize/drag hit-testing is unaffected.
+    if !root.maximized: Rectangle {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+        // NOTE: mirrored by corner_radius in platform/window_integration.cpp, which
+        // clips the frameless window to the same roundrect via
+        // SetWindowRgn so the desktop shows through the corners.
+        // Keep the two in sync.
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.window-frame;
+    }
+
+}

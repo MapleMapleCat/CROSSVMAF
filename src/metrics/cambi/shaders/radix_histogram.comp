@@ -1,0 +1,120 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/integer.glsl"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer CValues {
+    uint values[];
+} c_values;
+layout(set = 0, binding = 1, std430) readonly buffer SelectionState {
+    uint values[];
+} state;
+layout(set = 0, binding = 2, std430) buffer RadixCounts {
+    uint values[];
+} radix_counts;
+layout(set = 0, binding = 3, std430) writeonly buffer PoolPartials {
+    uvec4 values[];
+} pool_partials;
+
+layout(push_constant) uniform Parameters {
+    uint value_offsets[5];
+    uint value_counts[5];
+    uint group_offsets[5];
+    uint partial_offsets[5];
+    uint digit_shift;
+} parameters;
+
+shared uint local_counts[256];
+shared uvec2 partial_sums[256];
+shared uint partial_counts[256];
+
+const uint values_per_thread = 4u;
+
+void main() {
+    const uint local_index = gl_LocalInvocationIndex;
+    const uint dispatch_group = gl_WorkGroupID.x;
+    uint scale = 4u;
+    for (uint candidate = 0u; candidate < 4u; ++candidate) {
+        if (dispatch_group < parameters.group_offsets[candidate + 1u]) {
+            scale = candidate;
+            break;
+        }
+    }
+    const uint state_offset = scale * 7u;
+    const uint count_offset = scale * 256u;
+    const bool final_pass = parameters.digit_shift == 0u;
+    const bool sparse_scale = state.values[state_offset + 4u] <=
+        state.values[state_offset + 2u];
+    const bool sparse_pool_pass =
+        sparse_scale && parameters.digit_shift == 24u;
+    if (sparse_scale && !sparse_pool_pass) return;
+    if (sparse_pool_pass) {
+        if (local_index == 0u) {
+            const uint scale_group = dispatch_group - parameters.group_offsets[scale];
+            pool_partials.values[parameters.partial_offsets[scale] + scale_group] =
+                scale_group == 0u ? uvec4(
+                    state.values[state_offset + 5u], state.values[state_offset + 6u],
+                    state.values[state_offset + 4u], 0u) : uvec4(0u);
+        }
+        return;
+    }
+    local_counts[local_index] = 0u;
+    barrier();
+
+    uvec2 partial_sum = uvec2(0u);
+    uint partial_count = 0u;
+    const uint group_value_offset =
+        (dispatch_group - parameters.group_offsets[scale]) *
+        gl_WorkGroupSize.x * values_per_thread;
+    for (uint value_batch = 0u; value_batch < values_per_thread;
+         ++value_batch) {
+        const uint value_index = group_value_offset + local_index +
+            value_batch * gl_WorkGroupSize.x;
+        if (value_index < parameters.value_counts[scale]) {
+            const uint value = c_values.values[
+                parameters.value_offsets[scale] + value_index];
+            const bool matches_prefix =
+                (value & state.values[state_offset + 3u]) ==
+                state.values[state_offset];
+            if (matches_prefix) {
+                const uint bin = (value >> parameters.digit_shift) & 255u;
+                atomicAdd(local_counts[bin], 1u);
+            } else if (final_pass &&
+                       (value & state.values[state_offset + 3u]) >
+                           state.values[state_offset]) {
+                partial_sum = cv_u64_add(
+                    partial_sum, uvec2(value, 0u));
+                ++partial_count;
+            }
+        }
+    }
+    partial_sums[local_index] = partial_sum;
+    partial_counts[local_index] = partial_count;
+    barrier();
+
+    const uint count = local_counts[local_index];
+    if (count != 0u) {
+        atomicAdd(radix_counts.values[count_offset + local_index], count);
+    }
+
+    if (final_pass) {
+        for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+            if (local_index < stride) {
+                partial_sums[local_index] = cv_u64_add(
+                    partial_sums[local_index],
+                    partial_sums[local_index + stride]);
+                partial_counts[local_index] +=
+                    partial_counts[local_index + stride];
+            }
+            barrier();
+        }
+        if (local_index == 0u) {
+            const uint partial_index = parameters.partial_offsets[scale] +
+                dispatch_group - parameters.group_offsets[scale];
+            pool_partials.values[partial_index] = uvec4(
+                partial_sums[0], partial_counts[0], 0u);
+        }
+    }
+}

@@ -1,0 +1,391 @@
+#version 450
+
+#ifdef CAMBI_HISTOGRAM_UINT16
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#endif
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Image {
+    uint values[];
+} image;
+layout(set = 0, binding = 1, std430) writeonly buffer CValues {
+    uint values[];
+} c_values;
+layout(set = 0, binding = 2, std430) buffer SelectionState {
+    uint values[];
+} state;
+
+layout(push_constant) uniform Parameters {
+    uint width;
+    uint height;
+    uint window_size;
+    uint segment_rows;
+    uint output_offset;
+    uint state_offset;
+} parameters;
+
+const uint active_mask_bit = 0x80000000u;
+const uint luma_value_mask = 0x7fffffffu;
+const uint value_band_base = 67u;
+const uint value_band_size = 497u;
+const uint visibility_luma = 78u;
+const uint tvi_thresholds[4] = uint[4](182u, 309u, 436u, 563u);
+const uint contrast_weights[4] = uint[4](1u, 2u, 3u, 4u);
+const uint c_value_fractional_bits = 18u;
+const uint staged_row_count = 8u;
+const uint maximum_staged_strip_width = 96u;
+
+shared uint staged_source_rows[
+    staged_row_count * maximum_staged_strip_width];
+shared uint group_first_active_row;
+shared uint group_last_active_row;
+shared uint group_nonzero_count;
+shared uint group_sum_low;
+shared uint group_sum_high;
+
+uint lane_nonzero_count;
+uvec2 lane_sum;
+
+#ifdef CAMBI_HISTOGRAM_UINT16
+uint16_t histogram[497];
+#else
+uint histogram[497];
+#endif
+
+uint histogram_count(int index) {
+    return uint(histogram[index]);
+}
+
+void store_histogram_count(uint index, uint value) {
+#ifdef CAMBI_HISTOGRAM_UINT16
+    histogram[index] = uint16_t(value);
+#else
+    histogram[index] = value;
+#endif
+}
+
+void update_histogram(uint packed_value, bool add) {
+    const uint compact =
+        (packed_value & luma_value_mask) - value_band_base;
+    const uint previous_count = histogram_count(int(compact));
+    store_histogram_count(
+        compact, add ? previous_count + 1u : previous_count - 1u);
+}
+
+void store_c_value(uint output_index, uint value) {
+    c_values.values[output_index] = value;
+    if (value != 0u) ++lane_nonzero_count;
+    const uint previous_low = lane_sum.x;
+    lane_sum.x += value;
+    lane_sum.y += lane_sum.x < previous_low ? 1u : 0u;
+}
+
+uint divide_c_value_numerator_rne(uint unscaled_numerator,
+                                  uint denominator) {
+    const uint whole_quotient = unscaled_numerator / denominator;
+    const uint unscaled_remainder =
+        unscaled_numerator - whole_quotient * denominator;
+
+    // The supported histogram limit guarantees denominator <= 8450 even for
+    // the wider numeric-test domain. The remainder shift therefore fits in a
+    // 32-bit uint while replacing the previous three-digit long division.
+    const uint scaled_remainder =
+        unscaled_remainder << c_value_fractional_bits;
+    const uint fractional_quotient = scaled_remainder / denominator;
+    const uint rounding_remainder =
+        scaled_remainder - fractional_quotient * denominator;
+
+    uint quotient =
+        (whole_quotient << c_value_fractional_bits) + fractional_quotient;
+    const uint distance_to_next_integer = denominator - rounding_remainder;
+    if (rounding_remainder > distance_to_next_integer ||
+        (rounding_remainder == distance_to_next_integer &&
+         (quotient & 1u) != 0u)) {
+        ++quotient;
+    }
+    return quotient;
+}
+
+uint pixel_c_value(uint value) {
+    const int compact = int(value - value_band_base);
+    const uint center = histogram_count(compact);
+    const uint adjusted = value + 4u;
+    uint maximum_weighted_neighbor = 0u;
+    uint maximum_denominator = 1u;
+    for (uint diff = 0u; diff < 4u; ++diff) {
+        const int distance = int(diff) + 1;
+        if (adjusted > tvi_thresholds[diff] ||
+            int(adjusted) + distance <= int(visibility_luma)) continue;
+        const int upper = compact + distance;
+        const int lower = compact - distance;
+        const uint upper_count = upper < int(value_band_size)
+            ? histogram_count(upper)
+            : 0u;
+        const uint lower_count = lower >= 0
+            ? histogram_count(lower)
+            : 0u;
+        const uint neighbor = max(upper_count, lower_count);
+        const uint weighted_neighbor = contrast_weights[diff] * neighbor;
+        const uint denominator = center + neighbor;
+        // The common center cancels. Cross-products fit in uint32 even for
+        // independent counts up to 4225: 4 * 4225 * 8450 = 142805000.
+        const bool candidate_is_larger =
+            weighted_neighbor * maximum_denominator >
+            maximum_weighted_neighbor * denominator;
+        maximum_weighted_neighbor = candidate_is_larger
+            ? weighted_neighbor : maximum_weighted_neighbor;
+        maximum_denominator = candidate_is_larger
+            ? denominator : maximum_denominator;
+    }
+    if (maximum_weighted_neighbor == 0u) return 0u;
+    // RNE is monotone, so only the largest exact fraction needs rounding.
+    return divide_c_value_numerator_rne(
+        center * maximum_weighted_neighbor, maximum_denominator);
+}
+
+void clear_histogram() {
+    for (uint index = 0u; index < value_band_size; ++index) {
+        store_histogram_count(index, 0u);
+    }
+}
+
+void stage_source_row(uint staged_row_index, uint source_row,
+                      uint strip_left, uint strip_width) {
+    const uint destination_base =
+        staged_row_index * maximum_staged_strip_width;
+    for (uint strip_offset = gl_LocalInvocationID.x;
+         strip_offset < strip_width;
+         strip_offset += gl_WorkGroupSize.x) {
+        const uint source_index = source_row * parameters.width +
+                                  strip_left + strip_offset;
+        staged_source_rows[destination_base + strip_offset] =
+            image.values[source_index];
+    }
+}
+
+uint staged_value(uint staged_row_index, uint source_column,
+                  uint strip_left) {
+    return staged_source_rows[
+        staged_row_index * maximum_staged_strip_width +
+        source_column - strip_left];
+}
+
+void calculate_column_segment(uint column, uint segment_index,
+                              bool column_active) {
+    const uint segment_begin = segment_index * parameters.segment_rows;
+    const uint segment_end = min(
+        segment_begin + parameters.segment_rows, parameters.height);
+
+    // Pre-scan: locate this column's first/last rows with an active center,
+    // then reduce to the workgroup's active row range. Output rows outside
+    // that range have inactive centers and therefore produce zero by
+    // construction, so the histogram only has to be folded over
+    // [first_row, last_row]. The scan reads the same lines the strip staging
+    // is about to load, so its traffic is cache warm-up, not extra bandwidth.
+    if (gl_LocalInvocationIndex == 0u) {
+        group_first_active_row = 0xffffffffu;
+        group_last_active_row = 0u;
+    }
+    barrier();
+    uint column_first = 0xffffffffu;
+    uint column_last = 0u;
+    if (column_active) {
+        for (uint row = segment_begin; row < segment_end; ++row) {
+            if ((image.values[row * parameters.width + column] &
+                 active_mask_bit) != 0u) {
+                column_first = min(column_first, row);
+                column_last = row;
+            }
+        }
+        atomicMin(group_first_active_row, column_first);
+        atomicMax(group_last_active_row, column_last);
+    }
+    barrier();
+    const uint first_row = group_first_active_row;
+    const uint last_row = group_last_active_row;
+
+    const uint output_base = parameters.output_offset + column;
+    if (first_row == 0xffffffffu) {
+        // No active center anywhere in this tile: every output is zero.
+        // The range is workgroup-uniform, so all lanes return together and
+        // no staged-row barrier below is skipped non-uniformly.
+        if (column_active) {
+            for (uint row = segment_begin; row < segment_end; ++row) {
+                store_c_value(
+                    output_base + row * parameters.width, 0u);
+            }
+        }
+        return;
+    }
+    if (column_active) {
+        for (uint row = segment_begin; row < first_row; ++row) {
+            store_c_value(output_base + row * parameters.width, 0u);
+        }
+        for (uint row = last_row + 1u; row < segment_end; ++row) {
+            store_c_value(output_base + row * parameters.width, 0u);
+        }
+    }
+    // A lane whose own column has no active center still joins staging (the
+    // staged-row barriers must stay workgroup-uniform) but skips every
+    // histogram fold; its outputs over the active range are zero because
+    // each center there is inactive.
+    const bool lane_folds = column_active && column_first != 0xffffffffu;
+    if (column_active && !lane_folds) {
+        for (uint row = first_row; row <= last_row; ++row) {
+            store_c_value(output_base + row * parameters.width, 0u);
+        }
+    }
+
+    if (lane_folds) clear_histogram();
+    const int radius = int(parameters.window_size >> 1u);
+    const int left = lane_folds ? max(int(column) - radius, 0) : 0;
+    const int right = lane_folds
+        ? min(int(column) + radius + 1, int(parameters.width))
+        : 0;
+    const uint group_column_begin =
+        gl_WorkGroupID.x * gl_WorkGroupSize.x;
+    const uint group_column_end = min(
+        group_column_begin + gl_WorkGroupSize.x, parameters.width);
+    const uint strip_left = uint(max(int(group_column_begin) - radius, 0));
+    const uint strip_right = uint(min(
+        int(group_column_end) + radius, int(parameters.width)));
+    const uint strip_width = strip_right - strip_left;
+    const int initial_top = max(int(first_row) - radius, 0);
+    const int initial_bottom = min(
+        int(first_row) + radius + 1, int(parameters.height));
+
+    // Load each overlapping source row once per workgroup, then preserve the
+    // original source-row and source-column histogram fold order per lane.
+    for (int batch_top = initial_top; batch_top < initial_bottom;
+         batch_top += int(staged_row_count)) {
+        const uint batch_row_count = uint(min(
+            int(staged_row_count), initial_bottom - batch_top));
+        for (uint staged_row_index = 0u;
+             staged_row_index < batch_row_count; ++staged_row_index) {
+            stage_source_row(
+                staged_row_index,
+                uint(batch_top) + staged_row_index,
+                strip_left, strip_width);
+        }
+        barrier();
+        if (lane_folds) {
+            for (uint staged_row_index = 0u;
+                 staged_row_index < batch_row_count; ++staged_row_index) {
+                for (int source_column = left; source_column < right;
+                     ++source_column) {
+                    const uint packed_value = staged_value(
+                        staged_row_index, uint(source_column), strip_left);
+                    if ((packed_value & active_mask_bit) != 0u) {
+                        update_histogram(packed_value, true);
+                    }
+                }
+            }
+        }
+        barrier();
+    }
+
+    if (lane_folds) {
+        const uint index = first_row * parameters.width + column;
+        const uint packed_value = image.values[index];
+        store_c_value(
+            parameters.output_offset + index,
+            (packed_value & active_mask_bit) != 0u
+                ? pixel_c_value(packed_value & luma_value_mask)
+                : 0u);
+    }
+
+    // Each transition needs one remove row and one add row. Staging four
+    // transitions amortizes synchronization without increasing shared usage.
+    const uint transition_batch_size = staged_row_count >> 1u;
+    for (uint batch_begin = first_row + 1u;
+         batch_begin <= last_row;
+         batch_begin += transition_batch_size) {
+        const uint transition_count = min(
+            transition_batch_size, last_row + 1u - batch_begin);
+        for (uint transition_index = 0u;
+             transition_index < transition_count; ++transition_index) {
+            const int row = int(batch_begin + transition_index);
+            const int remove_row = row - radius - 1;
+            const int add_row = row + radius;
+            if (remove_row >= 0) {
+                stage_source_row(
+                    transition_index * 2u, uint(remove_row),
+                    strip_left, strip_width);
+            }
+            if (add_row < int(parameters.height)) {
+                stage_source_row(
+                    transition_index * 2u + 1u, uint(add_row),
+                    strip_left, strip_width);
+            }
+        }
+        barrier();
+        if (lane_folds) {
+            for (uint transition_index = 0u;
+                 transition_index < transition_count; ++transition_index) {
+                const uint row = batch_begin + transition_index;
+                const int remove_row = int(row) - radius - 1;
+                const int add_row = int(row) + radius;
+                for (int source_column = left; source_column < right;
+                     ++source_column) {
+                    if (remove_row >= 0) {
+                        const uint packed_value = staged_value(
+                            transition_index * 2u,
+                            uint(source_column), strip_left);
+                        if ((packed_value & active_mask_bit) != 0u) {
+                            update_histogram(packed_value, false);
+                        }
+                    }
+                    if (add_row < int(parameters.height)) {
+                        const uint packed_value = staged_value(
+                            transition_index * 2u + 1u,
+                            uint(source_column), strip_left);
+                        if ((packed_value & active_mask_bit) != 0u) {
+                            update_histogram(packed_value, true);
+                        }
+                    }
+                }
+                const uint index = row * parameters.width + column;
+                const uint packed_value = image.values[index];
+                store_c_value(
+                    parameters.output_offset + index,
+                    (packed_value & active_mask_bit) != 0u
+                        ? pixel_c_value(packed_value & luma_value_mask)
+                        : 0u);
+            }
+        }
+        barrier();
+    }
+}
+
+void main() {
+    const uint column = gl_GlobalInvocationID.x;
+    const uint segment_index = gl_GlobalInvocationID.y;
+    const uint segment_begin = segment_index * parameters.segment_rows;
+    if (segment_begin >= parameters.height) return;
+    lane_nonzero_count = 0u;
+    lane_sum = uvec2(0u);
+    if (gl_LocalInvocationIndex == 0u) {
+        group_nonzero_count = 0u;
+        group_sum_low = 0u;
+        group_sum_high = 0u;
+    }
+    calculate_column_segment(
+        column, segment_index, column < parameters.width);
+    atomicAdd(group_nonzero_count, lane_nonzero_count);
+    const uint previous_group_low = atomicAdd(group_sum_low, lane_sum.x);
+    atomicAdd(group_sum_high, lane_sum.y +
+        (previous_group_low + lane_sum.x < previous_group_low ? 1u : 0u));
+    barrier();
+    if (gl_LocalInvocationIndex == 0u && group_nonzero_count != 0u) {
+        atomicAdd(
+            state.values[parameters.state_offset + 4u],
+            group_nonzero_count);
+        // Independent low-word additions each contribute their own carry.
+        // The next dispatch observes both limbs after the pipeline barrier.
+        const uint previous_low = atomicAdd(
+            state.values[parameters.state_offset + 5u], group_sum_low);
+        atomicAdd(state.values[parameters.state_offset + 6u], group_sum_high +
+            (previous_low + group_sum_low < previous_low ? 1u : 0u));
+    }
+}

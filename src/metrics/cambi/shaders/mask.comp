@@ -1,0 +1,120 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Image {
+    uint values[];
+} image;
+layout(set = 0, binding = 1, std430) writeonly buffer Mask {
+    uint values[];
+} mask;
+
+layout(push_constant) uniform Parameters {
+    uint width;
+    uint height;
+    uint threshold;
+} parameters;
+
+const uint output_tile_width = 16u;
+const uint mask_radius = 3u;
+const uint derivative_tile_width = output_tile_width + 2u * mask_radius;
+const uint source_tile_width = derivative_tile_width + 1u;
+const uint horizontal_sum_tile_width = output_tile_width;
+
+shared uint source_tile[source_tile_width * source_tile_width];
+shared uint derivative_tile[
+    derivative_tile_width * derivative_tile_width];
+
+void main() {
+    const uint local_index = gl_LocalInvocationIndex;
+    const uvec2 group_origin = gl_WorkGroupID.xy * output_tile_width;
+
+    const uint source_tile_element_count =
+        source_tile_width * source_tile_width;
+    for (uint tile_index = local_index;
+         tile_index < source_tile_element_count;
+         tile_index += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+        const uint tile_row = tile_index / source_tile_width;
+        const uint tile_column = tile_index - tile_row * source_tile_width;
+        const int source_row = int(group_origin.y) + int(tile_row) -
+                               int(mask_radius);
+        const int source_column = int(group_origin.x) + int(tile_column) -
+                                  int(mask_radius);
+        source_tile[tile_index] =
+            source_row >= 0 && source_row < int(parameters.height) &&
+                source_column >= 0 && source_column < int(parameters.width)
+            ? image.values[
+                  uint(source_row) * parameters.width + uint(source_column)]
+            : 0u;
+    }
+    barrier();
+
+    const uint derivative_tile_element_count =
+        derivative_tile_width * derivative_tile_width;
+    for (uint tile_index = local_index;
+         tile_index < derivative_tile_element_count;
+         tile_index += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+        const uint tile_row = tile_index / derivative_tile_width;
+        const uint tile_column =
+            tile_index - tile_row * derivative_tile_width;
+        const int source_row = int(group_origin.y) + int(tile_row) -
+                               int(mask_radius);
+        const int source_column = int(group_origin.x) + int(tile_column) -
+                                  int(mask_radius);
+        uint derivative_value = 0u;
+        if (source_row >= 0 && source_row < int(parameters.height) &&
+            source_column >= 0 && source_column < int(parameters.width)) {
+            const uint source_index =
+                tile_row * source_tile_width + tile_column;
+            const uint center = source_tile[source_index];
+            const bool horizontal =
+                source_column + 1 == int(parameters.width) ||
+                center == source_tile[source_index + 1u];
+            const bool vertical =
+                source_row + 1 == int(parameters.height) ||
+                center == source_tile[source_index + source_tile_width];
+            derivative_value = horizontal && vertical ? 1u : 0u;
+        }
+        derivative_tile[tile_index] = derivative_value;
+    }
+    barrier();
+
+    // The source tile is no longer needed after derivative construction. Reuse
+    // it for exact horizontal 7-tap sums before the vertical accumulation.
+    const uint horizontal_sum_element_count =
+        derivative_tile_width * horizontal_sum_tile_width;
+    for (uint sum_index = local_index;
+         sum_index < horizontal_sum_element_count;
+         sum_index += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+        const uint sum_row = sum_index / horizontal_sum_tile_width;
+        const uint output_column =
+            sum_index - sum_row * horizontal_sum_tile_width;
+        const uint derivative_row_base =
+            sum_row * derivative_tile_width + output_column;
+        uint horizontal_sum = 0u;
+        for (uint column_offset = 0u;
+             column_offset <= 2u * mask_radius; ++column_offset) {
+            horizontal_sum +=
+                derivative_tile[derivative_row_base + column_offset];
+        }
+        source_tile[sum_index] = horizontal_sum;
+    }
+    barrier();
+
+    const uint column = gl_GlobalInvocationID.x;
+    const uint row = gl_GlobalInvocationID.y;
+    if (column >= parameters.width || row >= parameters.height) return;
+
+    uint count = 0u;
+    for (uint row_offset = 0u; row_offset <= 2u * mask_radius;
+         ++row_offset) {
+        const uint horizontal_sum_row =
+            gl_LocalInvocationID.y + row_offset;
+        count += source_tile[
+            horizontal_sum_row * horizontal_sum_tile_width +
+            gl_LocalInvocationID.x];
+    }
+    mask.values[row * parameters.width + column] =
+        count > parameters.threshold ? 1u : 0u;
+}

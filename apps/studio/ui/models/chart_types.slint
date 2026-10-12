@@ -1,0 +1,90 @@
+// Data contract between the C++ view model and the Slint UI.
+// All chart geometry is computed in C++ in "viewbox units"; the chart
+// components scale those units to physical pixels.
+
+// Quality kinds (0 excellent, 1 good, 2 fair, 3 poor) are resolved by the UI
+// so existing chart data responds immediately when the theme changes.
+// A filled rect inside a chart (background quality zones).
+export struct ZoneRect {
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    quality-kind: int,
+}
+
+// A straight 1-unit line segment (grid lines).
+export struct SegLine {
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+}
+
+// A chart axis label. anchor: 0 = start, 1 = middle, 2 = end.
+export struct AxisLabel {
+    x: float,
+    y: float,
+    text: string,
+    anchor: int,
+}
+
+// A dashed horizontal reference guide with an end-anchored label.
+export struct GuideLine {
+    dash-path: string,
+    quality-kind: int,
+    label: string,
+    label-x: float,
+    label-y: float,
+}
+
+// One polyline series; path is an SVG path string in viewbox units.
+// slot > 0 picks the themed SeriesPalette color instead of `color`.
+export struct SeriesPath {
+    name: string,
+    path: string,
+    color: color,
+    use-accent: bool,
+    slot: int,
+    width: float,
+    opacity: float,
+    visible: bool,
+}
+
+// One filled cell of the per-frame heat strip.
+export struct HeatCell {
+    x: float,
+    w: float,
+    color: color,
+}
+
+// Low-score marker dot on the report chart.
+export struct MarkerDot {
+    x: float,
+    y: float,
+}
+
+// Histogram bar.
+export struct HistoBar {
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    quality-kind: int,
+}
+
+// Histogram legend row.
+export struct LegendDot {
+    label: string,
+    quality-kind: int,
+}
+
+// Rate-distortion scatter point; slot is the 1-based SeriesPalette color.
+// `sweet` rings the lowest bit rate that reaches the visually lossless mean.
+export struct RdPoint {
+    x: float,
+    y: float,
+    slot: int,
+    value-label: string,
+    sweet: bool,
+}

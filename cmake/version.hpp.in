@@ -1,0 +1,13 @@
+#pragma once
+
+// Generated from the root project's VERSION; do not edit the generated file.
+#include <string_view>
+
+// Also usable in compile-time string literal concatenation (CLI help).
+#define CROSSVMAF_VERSION_STRING "@PROJECT_VERSION@"
+
+namespace crossvmaf {
+
+inline constexpr std::string_view software_version{CROSSVMAF_VERSION_STRING};
+
+} // namespace crossvmaf

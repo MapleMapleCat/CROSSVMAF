@@ -1,0 +1,62 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputPlane {
+    uint words[];
+} input_plane;
+layout(set = 0, binding = 1, std430) writeonly buffer NormalizedImage {
+    uint values[];
+} normalized_image;
+
+layout(push_constant) uniform Parameters {
+    uint width;
+    uint height;
+    uint stride_bytes;
+    uint bit_depth;
+} parameters;
+
+uint load_byte(uint byte_offset) {
+    const uint word = input_plane.words[byte_offset >> 2u];
+    return (word >> ((byte_offset & 3u) * 8u)) & 0xffu;
+}
+
+uint load_sample(uint row, uint column) {
+    const uint bytes_per_sample = parameters.bit_depth == 8u ? 1u : 2u;
+    const uint offset = row * parameters.stride_bytes +
+                        column * bytes_per_sample;
+    const uint low = load_byte(offset);
+    return bytes_per_sample == 1u
+        ? low
+        : low | (load_byte(offset + 1u) << 8u);
+}
+
+uint normalize_sample(uint row, uint column) {
+    const uint sample_value = load_sample(row, column);
+    if (parameters.bit_depth < 10u) {
+        return sample_value << (10u - parameters.bit_depth);
+    }
+    const uint shift = parameters.bit_depth - 10u;
+    const uint rounding = shift == 0u ? 0u : 1u << (shift - 1u);
+    return (sample_value + rounding) >> shift;
+}
+
+void main() {
+    const uint column = gl_GlobalInvocationID.x;
+    const uint row = gl_GlobalInvocationID.y;
+    if (column >= parameters.width || row >= parameters.height) return;
+    uint value = normalize_sample(row, column);
+    if (parameters.bit_depth < 10u) {
+        if (row + 1u < parameters.height && column + 1u < parameters.width) {
+            value = (value + normalize_sample(row, column + 1u) +
+                     normalize_sample(row + 1u, column) +
+                     normalize_sample(row + 1u, column + 1u)) >> 2u;
+        } else if (row + 1u < parameters.height) {
+            value = (value + normalize_sample(row + 1u, column)) >> 1u;
+        } else if (column + 1u < parameters.width) {
+            value = (value + normalize_sample(row, column + 1u)) >> 1u;
+        }
+    }
+    normalized_image.values[row * parameters.width + column] = value;
+}

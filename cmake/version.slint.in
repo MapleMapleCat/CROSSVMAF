@@ -1,0 +1,4 @@
+// Generated from the root project's VERSION; independent of the VMAF model version.
+export global SoftwareVersion {
+    out property <string> value: "@PROJECT_VERSION@";
+}

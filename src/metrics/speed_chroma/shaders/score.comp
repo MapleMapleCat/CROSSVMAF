@@ -1,0 +1,2509 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#ifndef CROSSVMAF_SPEED_CHROMA_PIPELINE
+#error CROSSVMAF_SPEED_CHROMA_PIPELINE must select a compiled phase
+#endif
+
+#ifndef CROSSVMAF_SPEED_CHROMA_STREAMING_WAVE
+#define CROSSVMAF_SPEED_CHROMA_STREAMING_WAVE 0
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE < 1 || CROSSVMAF_SPEED_CHROMA_PIPELINE > 7
+#error CROSSVMAF_SPEED_CHROMA_PIPELINE is outside the supported range
+#endif
+
+#include "glsl/transcendentals.glsl"
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 1
+#ifndef CROSSVMAF_SPEED_CHROMA_MEANS_LOCAL_SIZE
+#error CROSSVMAF_SPEED_CHROMA_MEANS_LOCAL_SIZE is required for pipeline 1
+#endif
+layout(
+    local_size_x = CROSSVMAF_SPEED_CHROMA_MEANS_LOCAL_SIZE,
+    local_size_y = 1,
+    local_size_z = 1) in;
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 2
+#ifndef CROSSVMAF_SPEED_CHROMA_COMPACT_TRIDIAGONAL_LOCAL_SIZE
+#error CROSSVMAF_SPEED_CHROMA_COMPACT_TRIDIAGONAL_LOCAL_SIZE is required for pipeline 2
+#endif
+layout(
+    local_size_x = CROSSVMAF_SPEED_CHROMA_COMPACT_TRIDIAGONAL_LOCAL_SIZE,
+    local_size_y = 1,
+    local_size_z = 1) in;
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 3
+#ifndef CROSSVMAF_SPEED_CHROMA_BLOCK_STATISTICS_LOCAL_SIZE
+#error CROSSVMAF_SPEED_CHROMA_BLOCK_STATISTICS_LOCAL_SIZE is required for pipeline 3
+#endif
+layout(
+    local_size_x = CROSSVMAF_SPEED_CHROMA_BLOCK_STATISTICS_LOCAL_SIZE,
+    local_size_y = 1,
+    local_size_z = 1) in;
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 4
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 5
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 6
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 7
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+#else
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+#endif
+
+layout(set = 0, binding = 0, std430) readonly buffer HighpassSamples {
+    uvec2 values[];
+} highpass_samples;
+layout(set = 0, binding = 1, std430) buffer Scratch {
+    uvec2 values[];
+} scratch;
+layout(set = 0, binding = 2, std430) buffer Results {
+    uvec2 values[];
+} results;
+layout(set = 0, binding = 3, std430) readonly buffer Status {
+    uint flags[];
+} preprocessing_status;
+#if CROSSVMAF_SPEED_CHROMA_STREAMING_WAVE
+layout(set = 0, binding = 4, std430) readonly buffer WaveSlots {
+    uvec2 entries[];
+} wave_slots;
+#endif
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 1
+shared uvec4 means_exact_row_sums[64];
+shared uint means_exact_failure;
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 5
+shared uvec4 covariance_partials[320];
+shared uvec4 covariance_row_sample_sums[320];
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 2
+shared uvec2 compact_matrix[625];
+shared uvec2 compact_reflector[25];
+shared uvec2 compact_product[25];
+shared uvec2 compact_dot_terms[25];
+shared uvec2 compact_current_tau;
+shared uvec2 compact_tail_scale;
+shared uvec2 compact_correction_scale;
+shared int compact_matrix_exponent;
+shared uint compact_phase_failed;
+shared uint compact_control;
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 6
+// Limb-major storage keeps the five exact-integer states in a shared SoA.
+shared uint exact_wide_limbs[400];
+shared uint exact_wide_used_limb_counts[5];
+shared int exact_wide_signs[5];
+shared uint exact_phase_failed;
+// Prefix scans, cooperative comparisons, and product accumulation are
+// sequential phases, so they share one bounded workgroup workspace.
+shared uint exact_wide_workspace[384];
+shared uint exact_prefix_final_carry;
+shared uint exact_subtract_operation;
+shared uint exact_subtract_lhs_slot;
+shared uint exact_subtract_rhs_slot;
+shared uint exact_subtract_output_slot;
+shared int exact_subtract_output_sign;
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 4
+// Tiled finalize: lanes 0-31 fold channel U while lanes 32-63 fold channel V.
+// Each half-group processes blocks in 32-wide tiles, stages per-block
+// contributions in shared memory, and folds them in original block order.
+shared uvec2 finalize_contributions[2][32];
+shared uint finalize_contribution_valid[2][32];
+shared uvec2 finalize_base_entropy;
+shared uint finalize_base_valid;
+shared uvec2 finalize_channel_scores[2];
+shared uvec2 finalize_channel_flags[2];
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 3
+// The cooperative phase reuses block_phase_values for independent
+// reflector-dot products, then publishes the transformed vector to scratch.
+shared uvec2 block_transformed_values[25];
+shared uvec2 block_reflector_scaled_dot;
+shared uvec2 block_phase_values[25];
+shared int block_right_hand_side_exponent;
+shared uint block_phase_failed;
+#endif
+
+layout(push_constant) uniform Parameters {
+    uint operating_width;
+    uint operating_height;
+    uint truncated_width;
+    uint truncated_height;
+    uint blocks_horizontal;
+    uint blocks_vertical;
+    uint block_count;
+    uint submatrix_width;
+    uint submatrix_height;
+    uint covariance_sample_count;
+    uint reserved;
+    uint highpass_frame_stride_elements;
+    uint scratch_frame_stride_elements;
+    uint result_frame_stride_elements;
+    uint status_frame_stride_elements;
+    uint sigma_low;
+    uint sigma_high;
+    uint nn_floor_low;
+    uint nn_floor_high;
+    uint maximum_low;
+    uint maximum_high;
+    CvPreparedU32Divider covariance_sample_divider;
+    CvPreparedU32Divider block_count_divider;
+} parameters;
+
+const uint block_size = 5u;
+const uint element_count = 25u;
+const uint matrix_count = 625u;
+const uint reflector_count = 23u;
+const uint score_result_element_count = 10u;
+const uint block_intermediate_element_count = 26u;
+const uint score_scratch_elements_per_block = 28u;
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 6
+const uint characteristic_integer_limb_count = 80u;
+const uint exact_wide_slot_count = 5u;
+const uint exact_polynomial_previous_slot = 0u;
+const uint exact_polynomial_current_slot = 1u;
+const uint exact_polynomial_next_slot = 2u;
+const uint exact_diagonal_product_slot = 3u;
+const uint exact_coupling_product_slot = 4u;
+const uint exact_prefix_element_count = 96u;
+const uint exact_prefix_buffer_count = 2u;
+const uint exact_product_column_count = 84u;
+const uint exact_product_count = 2u;
+const uint exact_product_accumulator_count = 2u;
+const uint exact_diagonal_product_index = 0u;
+const uint exact_coupling_product_index = 1u;
+const uint exact_product_low_accumulator = 0u;
+const uint exact_product_high_accumulator = 1u;
+const uint exact_subtract_zero_operation = 0u;
+const uint exact_subtract_copy_operation = 1u;
+const uint exact_subtract_add_operation = 2u;
+const uint exact_subtract_subtract_operation = 3u;
+#endif
+
+// Frozen intermediate ABI mirrored by the derived constants and static
+// assertions in parameters.hpp. Offsets and counts are uvec2 elements.
+const uint covariance_logical_offset = 0u;
+const uint means_logical_offset = 625u;
+const uint reflector_tau_logical_offset = 650u;
+const uint reflector_tails_logical_offset = 673u;
+const uint diagonal_logical_offset = 949u;
+const uint subdiagonal_logical_offset = 974u;
+const uint ldl_pivots_logical_offset = 998u;
+const uint ldl_multipliers_logical_offset = 1023u;
+const uint diagnostic_diagonal_logical_offset = 1047u;
+const uint diagnostic_subdiagonal_logical_offset = 1072u;
+const uint matrix_exponent_logical_offset = 1096u;
+const uint regularity_metadata_logical_offset = 1097u;
+const uint factor_liveness_dimensions_logical_offset = 1098u;
+const uint factor_liveness_shape_logical_offset = 1099u;
+const uint block_statistics_logical_offset = 1100u;
+const uint stream_state_result_offset = 6u;
+const uint stream_singular_flag = 1u;
+const uint stream_arithmetic_failure_flag = 4u;
+
+const uvec2 q_zero = uvec2(0u);
+const uvec2 q_one = uvec2(0u, 1u);
+const uvec2 q_quarter = uvec2(0x40000000u, 0u);
+const uvec2 q_three_quarters = uvec2(0xc0000000u, 0u);
+const uvec2 q_public_epsilon = uvec2(4295u, 0u);
+const uvec2 q_log2_two_pi_e = uvec2(0x181ce99cu, 0x00000004u);
+const uvec2 l_zero = uvec2(0u);
+const uvec2 l_one = uvec2(0u, 0x00010000u);
+const uvec2 l_half = uvec2(0u, 0x00008000u);
+
+uint scratch_stream_stride() {
+    return block_statistics_logical_offset +
+        score_scratch_elements_per_block * parameters.block_count;
+}
+
+uint current_batch_frame() {
+#if CROSSVMAF_SPEED_CHROMA_STREAMING_WAVE
+    return wave_slots.entries[gl_WorkGroupID.y].x;
+#else
+    return 0u;
+#endif
+}
+
+uint result_packet_index(uint logical_index) {
+    const uint frame_stride = parameters.result_frame_stride_elements == 0u
+        ? score_result_element_count
+        : parameters.result_frame_stride_elements;
+    return current_batch_frame() * frame_stride +
+        logical_index;
+}
+
+uint stream_state_index_for(uint stream) {
+    return result_packet_index(stream_state_result_offset) + stream;
+}
+
+uint scratch_index_for_stream(uint stream, uint logical_index) {
+    const uint default_frame_stride = 4u * scratch_stream_stride();
+    const uint frame_stride = parameters.scratch_frame_stride_elements == 0u
+        ? default_frame_stride
+        : parameters.scratch_frame_stride_elements;
+    return current_batch_frame() * frame_stride +
+        stream * scratch_stream_stride() + logical_index;
+}
+
+uint current_parameter_stream() {
+    return gl_WorkGroupID.z;
+}
+
+uint current_scratch_index(uint logical_index) {
+    return scratch_index_for_stream(current_parameter_stream(), logical_index);
+}
+
+uint current_stream_state_index() {
+    return stream_state_index_for(current_parameter_stream());
+}
+
+uint matrix_index(uint base, uint row, uint column) {
+    return base + row * element_count + column;
+}
+
+uint reflector_tail_offset(uint reflector_index) {
+    return reflector_index * (47u - reflector_index) / 2u;
+}
+
+uint entropy_logical_offset() {
+    return block_statistics_logical_offset;
+}
+
+uint variance_logical_offset() {
+    return block_statistics_logical_offset + parameters.block_count;
+}
+
+uint block_intermediate_logical_offset() {
+    return block_statistics_logical_offset + 2u * parameters.block_count;
+}
+
+uint block_intermediate_base(uint block) {
+    return block_intermediate_logical_offset() +
+        block * block_intermediate_element_count;
+}
+
+uvec2 q_sigma() {
+    return uvec2(parameters.sigma_low, parameters.sigma_high);
+}
+
+uvec2 q_nn_floor() {
+    return uvec2(parameters.nn_floor_low, parameters.nn_floor_high);
+}
+
+uvec2 q_from_uint(uint value) {
+    return uvec2(0u, value);
+}
+
+uvec2 q_from_int(int value) {
+    return cv_u64_shift_left(cv_i64_from_i32(value), 32u);
+}
+
+uvec2 q_absolute(uvec2 value) {
+    return cv_i64_apply_magnitude_saturating(
+        cv_i64_magnitude(value), false, false);
+}
+
+bool q_less(uvec2 lhs, uvec2 rhs) {
+    return cv_i64_less(lhs, rhs);
+}
+
+uvec2 q_add(uvec2 lhs, uvec2 rhs) {
+    return cv_q32_binary32_add(lhs, rhs);
+}
+
+uvec2 q_subtract(uvec2 lhs, uvec2 rhs) {
+    return cv_q32_binary32_subtract(lhs, rhs);
+}
+
+uvec2 q_multiply(uvec2 lhs, uvec2 rhs) {
+    return cv_q32_binary32_multiply(lhs, rhs);
+}
+
+bool q_divide(uvec2 numerator, uvec2 denominator, out uvec2 output_value) {
+    return cv_q32_binary32_divide(numerator, denominator, output_value);
+}
+
+bool q_divide_by_u32(
+    uvec2 numerator, CvPreparedU32Divider divider,
+    out uvec2 output_value) {
+    if (!cv_q32_divide_by_u32_prepared_rne(
+            numerator, divider, output_value)) {
+        return false;
+    }
+    output_value = cv_binary32_quantize(output_value);
+    return true;
+}
+
+bool q_log2(uvec2 value, out uvec2 output_value) {
+    return cv_q32_log2(value, output_value);
+}
+
+uvec2 l_from_q32(uvec2 value) {
+    return cv_q32_to_q48_saturating(value);
+}
+
+uvec2 l_scale(uvec2 value, int exponent) {
+    return cv_i64_scale_pow2_rne_saturating(value, exponent);
+}
+
+bool l_scale_checked(uvec2 value, int exponent, out uvec2 output_value) {
+    if (cv_u64_is_zero(value) || exponent == 0) {
+        output_value = value;
+        return true;
+    }
+    if (exponent < 0) {
+        output_value = cv_i64_scale_pow2_rne_saturating(value, exponent);
+        return true;
+    }
+    const uint shift = uint(exponent);
+    if (shift >= 64u) return false;
+    const bool negative = cv_i64_negative(value);
+    const uvec2 magnitude = cv_i64_magnitude(value);
+    const uvec2 signed_limit = negative
+        ? uvec2(0u, 0x80000000u)
+        : uvec2(0xffffffffu, 0x7fffffffu);
+    const uvec2 maximum_input = cv_u64_shift_right(signed_limit, shift);
+    if (cv_u64_less(maximum_input, magnitude)) return false;
+    const uvec2 shifted = cv_u64_shift_left(magnitude, shift);
+    output_value = negative ? cv_u64_negate(shifted) : shifted;
+    return true;
+}
+
+int q_normalization_exponent_from_magnitude(uvec2 largest_magnitude) {
+    const int highest_bit = cv_u64_msb(largest_magnitude);
+    return highest_bit < 0 ? 0 : 32 - highest_bit;
+}
+
+int q_scratch_normalization_exponent(uint base, uint count) {
+    uvec2 largest_magnitude = uvec2(0u);
+    for (uint index = 0u; index < count; ++index) {
+        const uvec2 magnitude = cv_i64_magnitude(scratch.values[base + index]);
+        if (cv_u64_less(largest_magnitude, magnitude)) {
+            largest_magnitude = magnitude;
+        }
+    }
+    return q_normalization_exponent_from_magnitude(largest_magnitude);
+}
+
+bool l_convert_public_with_exponent(
+    uvec2 value, int normalization_exponent, out uvec2 output_value) {
+    return l_scale_checked(value, normalization_exponent + 16, output_value);
+}
+
+bool l_to_q32_scaled_checked(
+    uvec2 value, int exponent, out uvec2 output_value) {
+    return l_scale_checked(value, exponent - 16, output_value);
+}
+
+uvec2 l_absolute(uvec2 value) {
+    return cv_i64_apply_magnitude_saturating(
+        cv_i64_magnitude(value), false, false);
+}
+
+uvec2 l_negate(uvec2 value) {
+    return cv_q32_subtract_saturating(l_zero, value);
+}
+
+bool l_less(uvec2 lhs, uvec2 rhs) {
+    return cv_i64_less(lhs, rhs);
+}
+
+uvec2 l_add(uvec2 lhs, uvec2 rhs) {
+    return cv_q48_binary32_add(lhs, rhs);
+}
+
+uvec2 l_subtract(uvec2 lhs, uvec2 rhs) {
+    return cv_q48_binary32_subtract(lhs, rhs);
+}
+
+uvec2 l_multiply(uvec2 lhs, uvec2 rhs) {
+    return cv_q48_binary32_multiply(lhs, rhs);
+}
+
+bool l_divide(uvec2 numerator, uvec2 denominator, out uvec2 output_value) {
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 2 || \
+    CROSSVMAF_SPEED_CHROMA_PIPELINE == 3 || \
+    CROSSVMAF_SPEED_CHROMA_PIPELINE == 7
+    return cv_q48_binary32_divide_base16(
+        numerator, denominator, output_value);
+#else
+    return cv_q48_binary32_divide(numerator, denominator, output_value);
+#endif
+}
+
+uvec2 l_from_uint(uint value) {
+    return uvec2(0u, value << 16u);
+}
+
+int l_value_normalization_exponent(uvec2 value) {
+    const int highest_bit = cv_u64_msb(cv_i64_magnitude(value));
+    return highest_bit < 0 ? 0 : 48 - highest_bit;
+}
+
+int l_scratch_normalization_exponent(uint base, uint count) {
+    uvec2 largest = uvec2(0u);
+    for (uint index = 0u; index < count; ++index) {
+        const uvec2 magnitude = cv_i64_magnitude(scratch.values[base + index]);
+        if (cv_u64_less(largest, magnitude)) largest = magnitude;
+    }
+    const int highest_bit = cv_u64_msb(largest);
+    return highest_bit < 0 ? 0 : 48 - highest_bit;
+}
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 6
+uint exact_wide_limb_index(uint slot, uint limb_index) {
+    return limb_index * exact_wide_slot_count + slot;
+}
+
+uint load_wide_limb(uint slot, uint limb_index) {
+    return exact_wide_limbs[exact_wide_limb_index(slot, limb_index)];
+}
+
+void store_wide_limb(uint slot, uint limb_index, uint value) {
+    exact_wide_limbs[exact_wide_limb_index(slot, limb_index)] = value;
+}
+
+void clear_wide_unsigned(uint slot) {
+    for (uint index = 0u; index < characteristic_integer_limb_count; ++index) {
+        store_wide_limb(slot, index, 0u);
+    }
+    exact_wide_used_limb_counts[slot] = 0u;
+}
+
+void clear_wide_signed(uint slot) {
+    clear_wide_unsigned(slot);
+    exact_wide_signs[slot] = 0;
+}
+
+void copy_wide_signed(uint destination_slot, uint source_slot) {
+    for (uint index = 0u; index < characteristic_integer_limb_count; ++index) {
+        store_wide_limb(
+            destination_slot, index, load_wide_limb(source_slot, index));
+    }
+    exact_wide_used_limb_counts[destination_slot] =
+        exact_wide_used_limb_counts[source_slot];
+    exact_wide_signs[destination_slot] = exact_wide_signs[source_slot];
+}
+
+void normalize_wide_unsigned(uint slot) {
+    while (exact_wide_used_limb_counts[slot] > 0u &&
+           load_wide_limb(
+               slot, exact_wide_used_limb_counts[slot] - 1u) == 0u) {
+        --exact_wide_used_limb_counts[slot];
+    }
+}
+
+void make_wide_signed(uvec2 value, uint output_slot) {
+    clear_wide_signed(output_slot);
+    if (cv_u64_is_zero(value)) return;
+    exact_wide_signs[output_slot] = cv_i64_negative(value) ? -1 : 1;
+    const uvec2 magnitude = cv_i64_magnitude(value);
+    store_wide_limb(output_slot, 0u, magnitude.x);
+    store_wide_limb(output_slot, 1u, magnitude.y);
+    exact_wide_used_limb_counts[output_slot] =
+        magnitude.y != 0u ? 2u : 1u;
+}
+
+void make_wide_positive_one(uint output_slot) {
+    clear_wide_signed(output_slot);
+    exact_wide_signs[output_slot] = 1;
+    store_wide_limb(output_slot, 0u, 1u);
+    exact_wide_used_limb_counts[output_slot] = 1u;
+}
+
+int compare_wide_unsigned(uint lhs_slot, uint rhs_slot) {
+    if (exact_wide_used_limb_counts[lhs_slot] !=
+        exact_wide_used_limb_counts[rhs_slot]) {
+        return exact_wide_used_limb_counts[lhs_slot] <
+                exact_wide_used_limb_counts[rhs_slot]
+            ? -1
+            : 1;
+    }
+    for (uint reverse_index = exact_wide_used_limb_counts[lhs_slot];
+         reverse_index > 0u; --reverse_index) {
+        const uint index = reverse_index - 1u;
+        const uint lhs_limb = load_wide_limb(lhs_slot, index);
+        const uint rhs_limb = load_wide_limb(rhs_slot, index);
+        if (lhs_limb != rhs_limb) {
+            return lhs_limb < rhs_limb ? -1 : 1;
+        }
+    }
+    return 0;
+}
+
+bool add_wide_unsigned(
+    uint lhs_slot, uint rhs_slot, uint output_slot) {
+    clear_wide_unsigned(output_slot);
+    const uint limb_count = max(
+        exact_wide_used_limb_counts[lhs_slot],
+        exact_wide_used_limb_counts[rhs_slot]);
+    uint carry = 0u;
+    for (uint index = 0u; index < limb_count; ++index) {
+        const uint lhs_limb = index < exact_wide_used_limb_counts[lhs_slot]
+            ? load_wide_limb(lhs_slot, index)
+            : 0u;
+        const uint rhs_limb = index < exact_wide_used_limb_counts[rhs_slot]
+            ? load_wide_limb(rhs_slot, index)
+            : 0u;
+        const uint partial = lhs_limb + rhs_limb;
+        const bool partial_overflow = partial < lhs_limb;
+        const uint result_limb = partial + carry;
+        const bool carry_overflow = result_limb < partial;
+        store_wide_limb(output_slot, index, result_limb);
+        carry = partial_overflow || carry_overflow ? 1u : 0u;
+    }
+    exact_wide_used_limb_counts[output_slot] = limb_count;
+    if (carry != 0u) {
+        if (exact_wide_used_limb_counts[output_slot] ==
+            characteristic_integer_limb_count) {
+            return false;
+        }
+        store_wide_limb(
+            output_slot, exact_wide_used_limb_counts[output_slot], carry);
+        ++exact_wide_used_limb_counts[output_slot];
+    }
+    normalize_wide_unsigned(output_slot);
+    return true;
+}
+
+void subtract_wide_unsigned(
+    uint lhs_slot, uint rhs_slot, uint output_slot) {
+    clear_wide_unsigned(output_slot);
+    uint borrow = 0u;
+    for (uint index = 0u;
+         index < exact_wide_used_limb_counts[lhs_slot]; ++index) {
+        const uint lhs_limb = load_wide_limb(lhs_slot, index);
+        const uint rhs_limb = index < exact_wide_used_limb_counts[rhs_slot]
+            ? load_wide_limb(rhs_slot, index)
+            : 0u;
+        const uint partial = lhs_limb - rhs_limb;
+        const bool rhs_borrow = lhs_limb < rhs_limb;
+        const uint result_limb = partial - borrow;
+        const bool carry_borrow = partial < borrow;
+        store_wide_limb(output_slot, index, result_limb);
+        borrow = rhs_borrow || carry_borrow ? 1u : 0u;
+    }
+    exact_wide_used_limb_counts[output_slot] =
+        exact_wide_used_limb_counts[lhs_slot];
+    normalize_wide_unsigned(output_slot);
+}
+
+bool add_wide_product_word(
+    uint output_slot, uint base_index, uint lhs, uint rhs) {
+    if (lhs == 0u || rhs == 0u) return true;
+    uint product_high;
+    uint product_low;
+    umulExtended(lhs, rhs, product_high, product_low);
+    if (base_index >= characteristic_integer_limb_count) return false;
+
+    const uint prior_low = load_wide_limb(output_slot, base_index);
+    const uint low_sum = prior_low + product_low;
+    store_wide_limb(output_slot, base_index, low_sum);
+    uint carry = low_sum < prior_low ? 1u : 0u;
+    uint index = base_index + 1u;
+    if (index >= characteristic_integer_limb_count) {
+        return product_high == 0u && carry == 0u;
+    }
+
+    const uint prior_high = load_wide_limb(output_slot, index);
+    const uint high_sum = prior_high + product_high;
+    const bool high_overflow = high_sum < prior_high;
+    const uint high_sum_with_carry = high_sum + carry;
+    store_wide_limb(output_slot, index, high_sum_with_carry);
+    const bool carry_overflow = high_sum_with_carry < high_sum;
+    carry = high_overflow || carry_overflow ? 1u : 0u;
+    ++index;
+    while (carry != 0u) {
+        if (index >= characteristic_integer_limb_count) return false;
+        const uint incremented_limb = load_wide_limb(output_slot, index) + 1u;
+        store_wide_limb(output_slot, index, incremented_limb);
+        carry = incremented_limb == 0u ? 1u : 0u;
+        ++index;
+    }
+    return true;
+}
+
+bool multiply_wide_unsigned_u64(
+    uint value_slot, uvec2 factor, uint output_slot) {
+    clear_wide_unsigned(output_slot);
+    for (uint value_index = 0u;
+         value_index < exact_wide_used_limb_counts[value_slot]; ++value_index) {
+        const uint value_limb = load_wide_limb(value_slot, value_index);
+        if (!add_wide_product_word(
+                output_slot, value_index, value_limb, factor.x) ||
+            !add_wide_product_word(
+                output_slot, value_index + 1u, value_limb, factor.y)) {
+            return false;
+        }
+    }
+    exact_wide_used_limb_counts[output_slot] =
+        characteristic_integer_limb_count;
+    normalize_wide_unsigned(output_slot);
+    return true;
+}
+
+bool multiply_wide_unsigned_u128(
+    uint value_slot, uvec4 factor, uint output_slot) {
+    clear_wide_unsigned(output_slot);
+    for (uint value_index = 0u;
+         value_index < exact_wide_used_limb_counts[value_slot]; ++value_index) {
+        const uint value_limb = load_wide_limb(value_slot, value_index);
+        for (uint factor_index = 0u; factor_index < 4u; ++factor_index) {
+            if (!add_wide_product_word(
+                    output_slot, value_index + factor_index,
+                    value_limb, factor[factor_index])) {
+                return false;
+            }
+        }
+    }
+    exact_wide_used_limb_counts[output_slot] =
+        characteristic_integer_limb_count;
+    normalize_wide_unsigned(output_slot);
+    return true;
+}
+
+bool multiply_wide_signed(
+    uint value_slot, uvec2 factor, uint output_slot) {
+    clear_wide_signed(output_slot);
+    if (exact_wide_signs[value_slot] == 0 || cv_u64_is_zero(factor)) {
+        return true;
+    }
+    if (!multiply_wide_unsigned_u64(
+            value_slot, cv_i64_magnitude(factor), output_slot)) {
+        return false;
+    }
+    exact_wide_signs[output_slot] = cv_i64_negative(factor)
+        ? -exact_wide_signs[value_slot]
+        : exact_wide_signs[value_slot];
+    return true;
+}
+
+bool multiply_wide_signed_unsigned128(
+    uint value_slot, uvec4 factor, uint output_slot) {
+    clear_wide_signed(output_slot);
+    if (exact_wide_signs[value_slot] == 0 ||
+        all(equal(factor, uvec4(0u)))) {
+        return true;
+    }
+    if (!multiply_wide_unsigned_u128(
+            value_slot, factor, output_slot)) {
+        return false;
+    }
+    exact_wide_signs[output_slot] = exact_wide_signs[value_slot];
+    return true;
+}
+
+void initialize_polynomial_pair_cooperatively(
+    uint previous_slot, uint current_slot) {
+    const uint local_lane = gl_LocalInvocationID.x;
+    for (uint limb_index = local_lane;
+         limb_index < characteristic_integer_limb_count;
+         limb_index += gl_WorkGroupSize.x) {
+        store_wide_limb(
+            previous_slot, limb_index, limb_index == 0u ? 1u : 0u);
+        store_wide_limb(current_slot, limb_index, 0u);
+    }
+    if (local_lane == 0u) {
+        exact_wide_used_limb_counts[previous_slot] = 1u;
+        exact_wide_signs[previous_slot] = 1;
+        exact_wide_used_limb_counts[current_slot] = 0u;
+        exact_wide_signs[current_slot] = 0;
+    }
+    barrier();
+}
+
+void make_wide_signed_cooperatively(uvec2 value, uint output_slot) {
+    const uint local_lane = gl_LocalInvocationID.x;
+    const uvec2 magnitude = cv_i64_magnitude(value);
+    for (uint limb_index = local_lane;
+         limb_index < characteristic_integer_limb_count;
+         limb_index += gl_WorkGroupSize.x) {
+        uint output_limb = 0u;
+        if (limb_index == 0u) {
+            output_limb = magnitude.x;
+        } else if (limb_index == 1u) {
+            output_limb = magnitude.y;
+        }
+        store_wide_limb(output_slot, limb_index, output_limb);
+    }
+    if (local_lane == 0u) {
+        exact_wide_used_limb_counts[output_slot] = magnitude.y != 0u
+            ? 2u
+            : (magnitude.x != 0u ? 1u : 0u);
+        exact_wide_signs[output_slot] = cv_u64_is_zero(value)
+            ? 0
+            : (cv_i64_negative(value) ? -1 : 1);
+    }
+    barrier();
+}
+
+uint exact_product_workspace_index(
+    uint product_index, uint accumulator_index, uint column_index) {
+    return ((product_index * exact_product_accumulator_count +
+             accumulator_index) * exact_product_column_count) +
+        column_index;
+}
+
+void accumulate_exact_product_word(
+    uint product_index, uint column_index, uint word) {
+    if (word == 0u) return;
+    const uint low_word_index = exact_product_workspace_index(
+        product_index, exact_product_low_accumulator, column_index);
+    const uint high_word_index = exact_product_workspace_index(
+        product_index, exact_product_high_accumulator, column_index);
+    const uint prior_low = atomicAdd(exact_wide_workspace[low_word_index], word);
+    if (prior_low + word < prior_low) {
+        atomicAdd(exact_wide_workspace[high_word_index], 1u);
+    }
+}
+
+bool finalize_exact_recurrence_products(
+    int diagonal_output_sign, int coupling_output_sign) {
+    uint diagonal_incoming_carry = 0u;
+    uint coupling_incoming_carry = 0u;
+    uint diagonal_used_limb_count = 0u;
+    uint coupling_used_limb_count = 0u;
+    bool diagonal_overflowed = false;
+    bool coupling_overflowed = false;
+    for (uint column_index = 0u;
+         column_index < exact_product_column_count; ++column_index) {
+        const uint diagonal_column_low = exact_wide_workspace[
+            exact_product_workspace_index(
+                exact_diagonal_product_index, exact_product_low_accumulator,
+                column_index)];
+        const uint diagonal_column_high = exact_wide_workspace[
+            exact_product_workspace_index(
+                exact_diagonal_product_index, exact_product_high_accumulator,
+                column_index)];
+        const uint coupling_column_low = exact_wide_workspace[
+            exact_product_workspace_index(
+                exact_coupling_product_index, exact_product_low_accumulator,
+                column_index)];
+        const uint coupling_column_high = exact_wide_workspace[
+            exact_product_workspace_index(
+                exact_coupling_product_index, exact_product_high_accumulator,
+                column_index)];
+
+        const uint diagonal_output_limb =
+            diagonal_column_low + diagonal_incoming_carry;
+        const uint coupling_output_limb =
+            coupling_column_low + coupling_incoming_carry;
+        const uint diagonal_carry_from_low =
+            diagonal_output_limb < diagonal_column_low ? 1u : 0u;
+        const uint coupling_carry_from_low =
+            coupling_output_limb < coupling_column_low ? 1u : 0u;
+        diagonal_incoming_carry =
+            diagonal_column_high + diagonal_carry_from_low;
+        coupling_incoming_carry =
+            coupling_column_high + coupling_carry_from_low;
+
+        if (column_index < characteristic_integer_limb_count) {
+            store_wide_limb(
+                exact_diagonal_product_slot, column_index,
+                diagonal_output_limb);
+            store_wide_limb(
+                exact_coupling_product_slot, column_index,
+                coupling_output_limb);
+            if (diagonal_output_limb != 0u) {
+                diagonal_used_limb_count = column_index + 1u;
+            }
+            if (coupling_output_limb != 0u) {
+                coupling_used_limb_count = column_index + 1u;
+            }
+        } else {
+            diagonal_overflowed =
+                diagonal_overflowed || diagonal_output_limb != 0u;
+            coupling_overflowed =
+                coupling_overflowed || coupling_output_limb != 0u;
+        }
+    }
+    diagonal_overflowed =
+        diagonal_overflowed || diagonal_incoming_carry != 0u;
+    coupling_overflowed =
+        coupling_overflowed || coupling_incoming_carry != 0u;
+
+    exact_wide_used_limb_counts[exact_diagonal_product_slot] =
+        diagonal_used_limb_count;
+    exact_wide_used_limb_counts[exact_coupling_product_slot] =
+        coupling_used_limb_count;
+    exact_wide_signs[exact_diagonal_product_slot] =
+        diagonal_used_limb_count == 0u ? 0 : diagonal_output_sign;
+    exact_wide_signs[exact_coupling_product_slot] =
+        coupling_used_limb_count == 0u ? 0 : coupling_output_sign;
+    return !diagonal_overflowed && !coupling_overflowed;
+}
+
+bool multiply_recurrence_products_cooperatively(
+    uint current_polynomial_slot, uvec2 shifted_diagonal_raw,
+    uint previous_polynomial_slot, uvec4 coupling_square) {
+    const uint local_lane = gl_LocalInvocationID.x;
+    const uint product_workspace_word_count =
+        exact_product_count * exact_product_accumulator_count *
+        exact_product_column_count;
+    for (uint word_index = local_lane;
+         word_index < product_workspace_word_count;
+         word_index += gl_WorkGroupSize.x) {
+        exact_wide_workspace[word_index] = 0u;
+    }
+    barrier();
+
+    const uvec2 diagonal_magnitude = cv_i64_magnitude(shifted_diagonal_raw);
+    const uint diagonal_term_count =
+        exact_wide_used_limb_counts[current_polynomial_slot] * 2u;
+    const uint coupling_term_count =
+        exact_wide_used_limb_counts[previous_polynomial_slot] * 4u;
+    const uint total_term_count = diagonal_term_count + coupling_term_count;
+    for (uint flat_term_index = local_lane;
+         flat_term_index < total_term_count;
+         flat_term_index += gl_WorkGroupSize.x) {
+        uint product_index;
+        uint value_slot;
+        uint factor_limb_count;
+        uint relative_term_index;
+        if (flat_term_index < diagonal_term_count) {
+            product_index = exact_diagonal_product_index;
+            value_slot = current_polynomial_slot;
+            factor_limb_count = 2u;
+            relative_term_index = flat_term_index;
+        } else {
+            product_index = exact_coupling_product_index;
+            value_slot = previous_polynomial_slot;
+            factor_limb_count = 4u;
+            relative_term_index = flat_term_index - diagonal_term_count;
+        }
+
+        const uint value_limb_index =
+            relative_term_index / factor_limb_count;
+        const uint factor_limb_index =
+            relative_term_index - value_limb_index * factor_limb_count;
+        const uint value_limb = load_wide_limb(
+            value_slot, value_limb_index);
+        const uint factor_limb = product_index == exact_diagonal_product_index
+            ? diagonal_magnitude[factor_limb_index]
+            : coupling_square[factor_limb_index];
+        if (value_limb != 0u && factor_limb != 0u) {
+            uint product_high;
+            uint product_low;
+            umulExtended(
+                value_limb, factor_limb, product_high, product_low);
+            const uint product_column =
+                value_limb_index + factor_limb_index;
+            accumulate_exact_product_word(
+                product_index, product_column, product_low);
+            accumulate_exact_product_word(
+                product_index, product_column + 1u, product_high);
+        }
+    }
+    barrier();
+
+    if (local_lane == 0u) {
+        const int diagonal_sign = cv_i64_negative(shifted_diagonal_raw)
+            ? -exact_wide_signs[current_polynomial_slot]
+            : exact_wide_signs[current_polynomial_slot];
+        if (!finalize_exact_recurrence_products(
+                diagonal_sign,
+                exact_wide_signs[previous_polynomial_slot])) {
+            exact_phase_failed = 1u;
+        }
+    }
+    barrier();
+    return exact_phase_failed == 0u;
+}
+
+bool subtract_wide_signed(
+    uint lhs_slot, uint rhs_slot, uint output_slot) {
+    clear_wide_signed(output_slot);
+    if (exact_wide_signs[rhs_slot] == 0) {
+        copy_wide_signed(output_slot, lhs_slot);
+        return true;
+    }
+    if (exact_wide_signs[lhs_slot] == 0) {
+        copy_wide_signed(output_slot, rhs_slot);
+        exact_wide_signs[output_slot] = -exact_wide_signs[output_slot];
+        return true;
+    }
+    if (exact_wide_signs[lhs_slot] != exact_wide_signs[rhs_slot]) {
+        if (!add_wide_unsigned(lhs_slot, rhs_slot, output_slot)) {
+            return false;
+        }
+        exact_wide_signs[output_slot] = exact_wide_signs[lhs_slot];
+        return true;
+    }
+    const int magnitude_comparison = compare_wide_unsigned(lhs_slot, rhs_slot);
+    if (magnitude_comparison == 0) return true;
+    if (magnitude_comparison > 0) {
+        subtract_wide_unsigned(lhs_slot, rhs_slot, output_slot);
+        exact_wide_signs[output_slot] = exact_wide_signs[lhs_slot];
+    } else {
+        subtract_wide_unsigned(rhs_slot, lhs_slot, output_slot);
+        exact_wide_signs[output_slot] = -exact_wide_signs[lhs_slot];
+    }
+    return true;
+}
+
+uint exact_prefix_pair_word_index(
+    uint buffer_index, uint element_index) {
+    return 2u * (buffer_index * exact_prefix_element_count + element_index);
+}
+
+uvec2 load_exact_prefix_pair(uint buffer_index, uint element_index) {
+    const uint word_index = exact_prefix_pair_word_index(
+        buffer_index, element_index);
+    return uvec2(
+        exact_wide_workspace[word_index],
+        exact_wide_workspace[word_index + 1u]);
+}
+
+void store_exact_prefix_pair(
+    uint buffer_index, uint element_index, uvec2 pair_value) {
+    const uint word_index = exact_prefix_pair_word_index(
+        buffer_index, element_index);
+    exact_wide_workspace[word_index] = pair_value.x;
+    exact_wide_workspace[word_index + 1u] = pair_value.y;
+}
+
+uvec2 combine_exact_prefix_pairs(uvec2 lower_pair, uvec2 upper_pair) {
+    return uvec2(
+        upper_pair.x | (upper_pair.y & lower_pair.x),
+        upper_pair.y & lower_pair.y);
+}
+
+void prepare_cooperative_wide_subtraction(
+    uint lhs_slot, uint rhs_slot, uint output_slot) {
+    const uint local_lane = gl_LocalInvocationID.x;
+    uint highest_mismatch_plus_one = 0u;
+    if (exact_wide_used_limb_counts[lhs_slot] ==
+        exact_wide_used_limb_counts[rhs_slot]) {
+        for (uint limb_index = local_lane;
+             limb_index < exact_wide_used_limb_counts[lhs_slot];
+             limb_index += gl_WorkGroupSize.x) {
+            if (load_wide_limb(lhs_slot, limb_index) !=
+                load_wide_limb(rhs_slot, limb_index)) {
+                highest_mismatch_plus_one = max(
+                    highest_mismatch_plus_one, limb_index + 1u);
+            }
+        }
+    }
+    exact_wide_workspace[local_lane] = highest_mismatch_plus_one;
+    barrier();
+
+    if (local_lane == 0u) {
+        exact_subtract_lhs_slot = lhs_slot;
+        exact_subtract_rhs_slot = rhs_slot;
+        exact_subtract_output_slot = output_slot;
+        exact_subtract_output_sign = 0;
+        exact_prefix_final_carry = 0u;
+        exact_wide_used_limb_counts[output_slot] = 0u;
+        exact_wide_signs[output_slot] = 0;
+
+        if (exact_wide_signs[rhs_slot] == 0) {
+            exact_subtract_operation = exact_subtract_copy_operation;
+            exact_subtract_output_sign = exact_wide_signs[lhs_slot];
+        } else if (exact_wide_signs[lhs_slot] == 0) {
+            exact_subtract_operation = exact_subtract_copy_operation;
+            exact_subtract_lhs_slot = rhs_slot;
+            exact_subtract_output_sign = -exact_wide_signs[rhs_slot];
+        } else if (exact_wide_signs[lhs_slot] != exact_wide_signs[rhs_slot]) {
+            exact_subtract_operation = exact_subtract_add_operation;
+            exact_subtract_output_sign = exact_wide_signs[lhs_slot];
+        } else {
+            int magnitude_comparison = 0;
+            if (exact_wide_used_limb_counts[lhs_slot] !=
+                exact_wide_used_limb_counts[rhs_slot]) {
+                magnitude_comparison =
+                    exact_wide_used_limb_counts[lhs_slot] <
+                        exact_wide_used_limb_counts[rhs_slot]
+                    ? -1
+                    : 1;
+            } else {
+                uint highest_mismatch = 0u;
+                for (uint lane_index = 0u;
+                     lane_index < gl_WorkGroupSize.x; ++lane_index) {
+                    highest_mismatch = max(
+                        highest_mismatch,
+                        exact_wide_workspace[lane_index]);
+                }
+                if (highest_mismatch != 0u) {
+                    const uint limb_index = highest_mismatch - 1u;
+                    magnitude_comparison =
+                        load_wide_limb(lhs_slot, limb_index) <
+                            load_wide_limb(rhs_slot, limb_index)
+                        ? -1
+                        : 1;
+                }
+            }
+
+            if (magnitude_comparison == 0) {
+                exact_subtract_operation = exact_subtract_zero_operation;
+            } else {
+                exact_subtract_operation = exact_subtract_subtract_operation;
+                if (magnitude_comparison > 0) {
+                    exact_subtract_output_sign = exact_wide_signs[lhs_slot];
+                } else {
+                    exact_subtract_lhs_slot = rhs_slot;
+                    exact_subtract_rhs_slot = lhs_slot;
+                    exact_subtract_output_sign = -exact_wide_signs[lhs_slot];
+                }
+            }
+        }
+    }
+    barrier();
+}
+
+void execute_cooperative_wide_prefix_operation() {
+    const uint local_lane = gl_LocalInvocationID.x;
+    const bool addition =
+        exact_subtract_operation == exact_subtract_add_operation;
+
+    for (uint element_index = local_lane;
+         element_index < exact_prefix_element_count;
+         element_index += gl_WorkGroupSize.x) {
+        uvec2 prefix_pair;
+        if (element_index >= characteristic_integer_limb_count) {
+            prefix_pair = uvec2(0u, 1u);
+        } else {
+            const uint lhs_limb = element_index <
+                    exact_wide_used_limb_counts[exact_subtract_lhs_slot]
+                ? load_wide_limb(exact_subtract_lhs_slot, element_index)
+                : 0u;
+            const uint rhs_limb = element_index <
+                    exact_wide_used_limb_counts[exact_subtract_rhs_slot]
+                ? load_wide_limb(exact_subtract_rhs_slot, element_index)
+                : 0u;
+            if (addition) {
+                const uint raw_sum = lhs_limb + rhs_limb;
+                prefix_pair = uvec2(
+                    raw_sum < lhs_limb ? 1u : 0u,
+                    raw_sum == 0xffffffffu ? 1u : 0u);
+            } else {
+                prefix_pair = uvec2(
+                    lhs_limb < rhs_limb ? 1u : 0u,
+                    lhs_limb == rhs_limb ? 1u : 0u);
+            }
+        }
+        store_exact_prefix_pair(0u, element_index, prefix_pair);
+    }
+    barrier();
+
+    uint source_buffer_index = 0u;
+    uint destination_buffer_index = 1u;
+    for (uint prefix_distance = 1u;
+         prefix_distance < exact_prefix_element_count;
+         prefix_distance <<= 1u) {
+        for (uint element_index = local_lane;
+             element_index < exact_prefix_element_count;
+             element_index += gl_WorkGroupSize.x) {
+            uvec2 combined_pair = load_exact_prefix_pair(
+                source_buffer_index, element_index);
+            if (element_index >= prefix_distance) {
+                combined_pair = combine_exact_prefix_pairs(
+                    load_exact_prefix_pair(
+                        source_buffer_index,
+                        element_index - prefix_distance),
+                    combined_pair);
+            }
+            store_exact_prefix_pair(
+                destination_buffer_index, element_index, combined_pair);
+        }
+        barrier();
+        const uint prior_source_buffer_index = source_buffer_index;
+        source_buffer_index = destination_buffer_index;
+        destination_buffer_index = prior_source_buffer_index;
+    }
+
+    for (uint element_index = local_lane;
+         element_index < characteristic_integer_limb_count;
+         element_index += gl_WorkGroupSize.x) {
+        const uint incoming_carry = element_index == 0u
+            ? 0u
+            : load_exact_prefix_pair(
+                source_buffer_index, element_index - 1u).x;
+        const uint lhs_limb = element_index <
+                exact_wide_used_limb_counts[exact_subtract_lhs_slot]
+            ? load_wide_limb(exact_subtract_lhs_slot, element_index)
+            : 0u;
+        const uint rhs_limb = element_index <
+                exact_wide_used_limb_counts[exact_subtract_rhs_slot]
+            ? load_wide_limb(exact_subtract_rhs_slot, element_index)
+            : 0u;
+        const uint raw_result = addition
+            ? lhs_limb + rhs_limb
+            : lhs_limb - rhs_limb;
+        store_wide_limb(
+            exact_subtract_output_slot, element_index,
+            addition
+                ? raw_result + incoming_carry
+                : raw_result - incoming_carry);
+    }
+    if (local_lane == 0u) {
+        exact_prefix_final_carry = load_exact_prefix_pair(
+            source_buffer_index, exact_prefix_element_count - 1u).x;
+    }
+    barrier();
+}
+
+void normalize_wide_unsigned_cooperatively(uint slot) {
+    const uint local_lane = gl_LocalInvocationID.x;
+    uint highest_nonzero_limb_plus_one = 0u;
+    for (uint limb_index = local_lane;
+         limb_index < characteristic_integer_limb_count;
+         limb_index += gl_WorkGroupSize.x) {
+        if (load_wide_limb(slot, limb_index) != 0u) {
+            highest_nonzero_limb_plus_one = max(
+                highest_nonzero_limb_plus_one, limb_index + 1u);
+        }
+    }
+    exact_wide_workspace[local_lane] = highest_nonzero_limb_plus_one;
+    barrier();
+    if (local_lane == 0u) {
+        uint used_limb_count = 0u;
+        for (uint lane_index = 0u;
+             lane_index < gl_WorkGroupSize.x; ++lane_index) {
+            used_limb_count = max(
+                used_limb_count, exact_wide_workspace[lane_index]);
+        }
+        exact_wide_used_limb_counts[slot] = used_limb_count;
+    }
+    barrier();
+}
+
+bool subtract_wide_signed_cooperatively(
+    uint lhs_slot, uint rhs_slot, uint output_slot) {
+    const uint local_lane = gl_LocalInvocationID.x;
+    if (exact_phase_failed == 0u) {
+        prepare_cooperative_wide_subtraction(lhs_slot, rhs_slot, output_slot);
+    }
+    if (exact_phase_failed != 0u) return false;
+
+    if (exact_subtract_operation == exact_subtract_add_operation ||
+        exact_subtract_operation == exact_subtract_subtract_operation) {
+        execute_cooperative_wide_prefix_operation();
+    } else {
+        for (uint limb_index = local_lane;
+             limb_index < characteristic_integer_limb_count;
+             limb_index += gl_WorkGroupSize.x) {
+            const uint output_limb =
+                exact_subtract_operation == exact_subtract_copy_operation
+                ? load_wide_limb(exact_subtract_lhs_slot, limb_index)
+                : 0u;
+            store_wide_limb(output_slot, limb_index, output_limb);
+        }
+        barrier();
+    }
+
+    normalize_wide_unsigned_cooperatively(output_slot);
+
+    if (local_lane == 0u) {
+        if (
+            exact_subtract_operation == exact_subtract_add_operation &&
+            exact_prefix_final_carry != 0u) {
+            exact_phase_failed = 1u;
+        } else {
+            exact_wide_signs[output_slot] =
+                exact_wide_used_limb_counts[output_slot] == 0u
+                ? 0
+                : exact_subtract_output_sign;
+        }
+    }
+    barrier();
+    return exact_phase_failed == 0u;
+}
+
+bool subtract_i64_checked(uvec2 lhs, uvec2 rhs, out uvec2 output_value) {
+    output_value = cv_u64_subtract(lhs, rhs);
+    const bool lhs_negative = cv_i64_negative(lhs);
+    const bool rhs_negative = cv_i64_negative(rhs);
+    const bool output_negative = cv_i64_negative(output_value);
+    return lhs_negative == rhs_negative || output_negative == lhs_negative;
+}
+#endif
+
+uvec2 load_quantized_feature_sample(uint index) {
+    const uint stream_element_count =
+        parameters.operating_width * parameters.operating_height;
+    const uint default_frame_stride = 4u * stream_element_count;
+    const uint frame_stride = parameters.highpass_frame_stride_elements == 0u
+        ? default_frame_stride
+        : parameters.highpass_frame_stride_elements;
+    return highpass_samples.values[
+        current_batch_frame() * frame_stride +
+        current_parameter_stream() * stream_element_count + index];
+}
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 1
+bool initialize_grouped_mean() {
+    const uint local_lane = gl_LocalInvocationID.x;
+    const uint mean_index = gl_WorkGroupID.x;
+    const uint start_row = mean_index / block_size;
+    const uint start_column = mean_index - start_row * block_size;
+    if (local_lane == 0u) means_exact_failure = 0u;
+    barrier();
+
+    uvec4 exact_row_sum = uvec4(0u);
+    bool accumulation_succeeded = true;
+    for (uint row = local_lane; row < parameters.submatrix_height;
+         row += gl_WorkGroupSize.x) {
+        for (uint column = 0u; column < parameters.submatrix_width;
+             ++column) {
+            const uint source =
+                (start_row + row) * parameters.operating_width +
+                start_column + column;
+            if (!cv_i128_add_i64_checked(
+                    exact_row_sum,
+                    load_quantized_feature_sample(source))) {
+                accumulation_succeeded = false;
+                break;
+            }
+        }
+        if (!accumulation_succeeded) break;
+    }
+    means_exact_row_sums[local_lane] = exact_row_sum;
+    if (!accumulation_succeeded) atomicOr(means_exact_failure, 1u);
+    barrier();
+
+    for (uint stride = gl_WorkGroupSize.x >> 1u; stride > 0u;
+         stride >>= 1u) {
+        if (local_lane < stride && means_exact_failure == 0u) {
+            uvec4 reduced_sum;
+            if (cv_i128_add_checked(
+                    means_exact_row_sums[local_lane],
+                    means_exact_row_sums[local_lane + stride],
+                    reduced_sum)) {
+                means_exact_row_sums[local_lane] = reduced_sum;
+            } else {
+                atomicOr(means_exact_failure, 1u);
+            }
+        }
+        barrier();
+    }
+
+    if (local_lane == 0u && means_exact_failure == 0u) {
+        uvec2 rounded_mean;
+        if (cv_i128_divide_i64_by_u32_prepared_rne_checked(
+                means_exact_row_sums[0],
+                parameters.covariance_sample_divider, rounded_mean)) {
+            scratch.values[current_scratch_index(
+                means_logical_offset + mean_index)] =
+                    cv_binary32_quantize(rounded_mean);
+        } else {
+            means_exact_failure = 1u;
+        }
+    }
+    barrier();
+    return means_exact_failure == 0u;
+}
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 5
+const uint covariance_sample_lane_count = 64u;
+const uint covariance_entries_per_group = 4u;
+const uint covariance_entry_batch_count = 7u;
+
+void accumulate_covariance_sample(
+    uint y_index, bool entry_is_valid, uint row, uint column,
+    uvec2 x, uvec2 y_mean, inout uvec4 sum) {
+    if (!entry_is_valid) return;
+    const uint y_row = y_index / block_size;
+    const uint y_column = y_index - y_row * block_size;
+    const uint y_source =
+        (y_row + row) * parameters.operating_width + y_column + column;
+    const uvec2 y = cv_q32_subtract_saturating(
+        load_quantized_feature_sample(y_source), y_mean);
+    sum = cv_u128_add(sum, cv_i64_multiply_wide(x, y));
+}
+
+void store_covariance_entry(
+    uint x_index, uint y_index, bool entry_is_valid, uvec4 sum) {
+    if (!entry_is_valid) return;
+    uvec2 covariance;
+    if (!cv_i128_divide_q64_by_u32_prepared_rne(
+            sum, parameters.covariance_sample_divider, covariance)) {
+        atomicOr(results.values[current_stream_state_index()].x, 4u);
+        return;
+    }
+    covariance = cv_binary32_quantize(covariance);
+    const uint covariance_base = current_scratch_index(
+        covariance_logical_offset);
+    scratch.values[matrix_index(covariance_base, x_index, y_index)] =
+        covariance;
+    scratch.values[matrix_index(covariance_base, y_index, x_index)] =
+        covariance;
+}
+
+#include "covariance.glsl"
+
+void initialize_covariance_group(uint group_index) {
+    const uint x_index = group_index / covariance_entry_batch_count;
+    const uint entry_batch =
+        group_index - x_index * covariance_entry_batch_count;
+    const uint first_y_index = entry_batch * covariance_entries_per_group;
+    if (x_index >= element_count || first_y_index > x_index) return;
+
+    const uint local_lane = gl_LocalInvocationID.x;
+    const uint y_index_0 = first_y_index;
+    const uint y_index_1 = first_y_index + 1u;
+    const uint y_index_2 = first_y_index + 2u;
+    const uint y_index_3 = first_y_index + 3u;
+    const bool entry_0_is_valid = y_index_0 <= x_index;
+    const bool entry_1_is_valid = y_index_1 <= x_index;
+    const bool entry_2_is_valid = y_index_2 <= x_index;
+    const bool entry_3_is_valid = y_index_3 <= x_index;
+
+    const uvec2 x_mean = scratch.values[current_scratch_index(
+        means_logical_offset + x_index)];
+    uvec2 y_mean_0 = q_zero;
+    uvec2 y_mean_1 = q_zero;
+    uvec2 y_mean_2 = q_zero;
+    uvec2 y_mean_3 = q_zero;
+    if (entry_0_is_valid) {
+        y_mean_0 = scratch.values[current_scratch_index(
+            means_logical_offset + y_index_0)];
+    }
+    if (entry_1_is_valid) {
+        y_mean_1 = scratch.values[current_scratch_index(
+            means_logical_offset + y_index_1)];
+    }
+    if (entry_2_is_valid) {
+        y_mean_2 = scratch.values[current_scratch_index(
+            means_logical_offset + y_index_2)];
+    }
+    if (entry_3_is_valid) {
+        y_mean_3 = scratch.values[current_scratch_index(
+            means_logical_offset + y_index_3)];
+    }
+
+    const uint x_row = x_index / block_size;
+    const uint x_column = x_index - x_row * block_size;
+    uvec4 sum_0 = uvec4(0u);
+    uvec4 sum_1 = uvec4(0u);
+    uvec4 sum_2 = uvec4(0u);
+    uvec4 sum_3 = uvec4(0u);
+    for (uint sample_index = local_lane;
+         sample_index < parameters.covariance_sample_count;
+         sample_index += covariance_sample_lane_count) {
+        const uint row = sample_index / parameters.submatrix_width;
+        const uint column =
+            sample_index - row * parameters.submatrix_width;
+        const uint x_source =
+            (x_row + row) * parameters.operating_width + x_column + column;
+        const uvec2 x = cv_q32_subtract_saturating(
+            load_quantized_feature_sample(x_source), x_mean);
+        accumulate_covariance_sample(
+            y_index_0, entry_0_is_valid, row, column,
+            x, y_mean_0, sum_0);
+        accumulate_covariance_sample(
+            y_index_1, entry_1_is_valid, row, column,
+            x, y_mean_1, sum_1);
+        accumulate_covariance_sample(
+            y_index_2, entry_2_is_valid, row, column,
+            x, y_mean_2, sum_2);
+        accumulate_covariance_sample(
+            y_index_3, entry_3_is_valid, row, column,
+            x, y_mean_3, sum_3);
+    }
+
+    covariance_partials[local_lane] = sum_0;
+    covariance_partials[covariance_sample_lane_count + local_lane] = sum_1;
+    covariance_partials[2u * covariance_sample_lane_count + local_lane] =
+        sum_2;
+    covariance_partials[3u * covariance_sample_lane_count + local_lane] =
+        sum_3;
+    barrier();
+    for (uint stride = covariance_sample_lane_count >> 1u; stride > 0u;
+         stride >>= 1u) {
+        if (local_lane < stride) {
+            covariance_partials[local_lane] = cv_u128_add(
+                covariance_partials[local_lane],
+                covariance_partials[local_lane + stride]);
+            covariance_partials[
+                covariance_sample_lane_count + local_lane] = cv_u128_add(
+                    covariance_partials[
+                        covariance_sample_lane_count + local_lane],
+                    covariance_partials[
+                        covariance_sample_lane_count + local_lane + stride]);
+            covariance_partials[
+                2u * covariance_sample_lane_count + local_lane] =
+                    cv_u128_add(
+                        covariance_partials[
+                            2u * covariance_sample_lane_count + local_lane],
+                        covariance_partials[
+                            2u * covariance_sample_lane_count +
+                            local_lane + stride]);
+            covariance_partials[
+                3u * covariance_sample_lane_count + local_lane] =
+                    cv_u128_add(
+                        covariance_partials[
+                            3u * covariance_sample_lane_count + local_lane],
+                        covariance_partials[
+                            3u * covariance_sample_lane_count +
+                            local_lane + stride]);
+        }
+        barrier();
+    }
+    if (local_lane != 0u) return;
+
+    store_covariance_entry(
+        x_index, y_index_0, entry_0_is_valid, covariance_partials[0]);
+    store_covariance_entry(
+        x_index, y_index_1, entry_1_is_valid,
+        covariance_partials[covariance_sample_lane_count]);
+    store_covariance_entry(
+        x_index, y_index_2, entry_2_is_valid,
+        covariance_partials[2u * covariance_sample_lane_count]);
+    store_covariance_entry(
+        x_index, y_index_3, entry_3_is_valid,
+        covariance_partials[3u * covariance_sample_lane_count]);
+}
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 2
+const uint compact_control_inactive = 0u;
+const uint compact_control_active = 1u;
+
+int compact_matrix_normalization_exponent() {
+    uvec2 largest_magnitude = uvec2(0u);
+    for (uint index = 0u; index < matrix_count; ++index) {
+        const uvec2 magnitude = cv_i64_magnitude(compact_matrix[index]);
+        if (cv_u64_less(largest_magnitude, magnitude)) {
+            largest_magnitude = magnitude;
+        }
+    }
+    return q_normalization_exponent_from_magnitude(largest_magnitude);
+}
+
+bool prepare_compact_householder_reflector(
+    uint column, out uvec2 tau, out uvec2 tail_scale) {
+    const uint leading_row = column + 1u;
+    uvec4 square_sum = uvec4(0u);
+    for (uint row = leading_row + 1u; row < element_count; ++row) {
+        cv_q48_norm_accumulate(
+            square_sum,
+            compact_matrix[matrix_index(0u, row, column)]);
+    }
+    const uvec2 tail_norm = cv_q48_norm_finalize_binary32(square_sum);
+    if (cv_u64_is_zero(tail_norm)) {
+        tau = l_zero;
+        tail_scale = l_zero;
+        return true;
+    }
+
+    const uvec2 alpha =
+        compact_matrix[matrix_index(0u, leading_row, column)];
+    const uvec2 hypotenuse = cv_q48_norm2_binary32(alpha, tail_norm);
+    const uvec2 beta = cv_i64_negative(alpha)
+        ? hypotenuse
+        : l_negate(hypotenuse);
+    if (!l_divide(l_subtract(beta, alpha), beta, tau)) return false;
+    tail_scale = l_subtract(alpha, beta);
+    if (cv_u64_is_zero(tail_scale)) return false;
+
+    compact_matrix[matrix_index(0u, leading_row, column)] = beta;
+    return true;
+}
+
+void reduce_to_compact_tridiagonal_cooperatively() {
+    const uint local_lane = gl_LocalInvocationID.x;
+    const uint covariance_base = current_scratch_index(
+        covariance_logical_offset);
+    const uint tau_base = current_scratch_index(
+        reflector_tau_logical_offset);
+    const uint tails_base = current_scratch_index(
+        reflector_tails_logical_offset);
+
+    if (local_lane == 0u) {
+        compact_phase_failed = current_parameter_stream() >= 4u ? 1u : 0u;
+        compact_control = compact_control_inactive;
+        if (compact_phase_failed == 0u) {
+            const uint state_index = current_stream_state_index();
+            if ((results.values[state_index].x &
+                    stream_arithmetic_failure_flag) != 0u) {
+                compact_phase_failed = 1u;
+            } else {
+                scratch.values[current_scratch_index(
+                    factor_liveness_dimensions_logical_offset)] = uvec2(
+                    parameters.submatrix_width,
+                    parameters.covariance_sample_count);
+                scratch.values[current_scratch_index(
+                    factor_liveness_shape_logical_offset)] = uvec2(
+                    parameters.operating_width, parameters.block_count);
+            }
+        }
+    }
+    barrier();
+
+    if (compact_phase_failed == 0u) {
+        for (uint index = local_lane; index < matrix_count;
+             index += gl_WorkGroupSize.x) {
+            compact_matrix[index] = scratch.values[covariance_base + index];
+        }
+    }
+    barrier();
+
+    if (local_lane == 0u) {
+        compact_matrix_exponent = 0;
+        if (compact_phase_failed == 0u) {
+            compact_matrix_exponent = compact_matrix_normalization_exponent();
+            scratch.values[current_scratch_index(
+                matrix_exponent_logical_offset)] =
+                uvec2(uint(compact_matrix_exponent), 0u);
+        }
+    }
+    barrier();
+
+    if (compact_phase_failed == 0u) {
+        for (uint index = local_lane; index < matrix_count;
+             index += gl_WorkGroupSize.x) {
+            uvec2 converted_value;
+            if (!l_convert_public_with_exponent(
+                    compact_matrix[index], compact_matrix_exponent,
+                    converted_value)) {
+                atomicOr(compact_phase_failed, 1u);
+            } else {
+                compact_matrix[index] = converted_value;
+            }
+        }
+    }
+    barrier();
+
+    for (uint column = 0u; column < reflector_count; ++column) {
+        const uint leading_row = column + 1u;
+        if (local_lane == 0u) {
+            compact_control = compact_control_inactive;
+            compact_current_tau = l_zero;
+            compact_tail_scale = l_zero;
+            if (compact_phase_failed == 0u) {
+                if (!prepare_compact_householder_reflector(
+                        column, compact_current_tau, compact_tail_scale)) {
+                    compact_phase_failed = 1u;
+                } else {
+                    scratch.values[tau_base + column] = compact_current_tau;
+                    if (!cv_u64_is_zero(compact_current_tau)) {
+                        compact_control = compact_control_active;
+                    }
+                }
+            }
+        }
+        barrier();
+
+        if (local_lane < element_count) {
+            const uint row = local_lane;
+            compact_reflector[row] = l_zero;
+            if (compact_phase_failed == 0u && row == leading_row &&
+                compact_control == compact_control_active) {
+                compact_reflector[row] = l_one;
+            }
+            if (compact_phase_failed == 0u && row > leading_row) {
+                const uint matrix_cell = matrix_index(0u, row, column);
+                if (compact_control == compact_control_active) {
+                    uvec2 quotient;
+                    if (!l_divide(
+                            compact_matrix[matrix_cell], compact_tail_scale,
+                            quotient)) {
+                        atomicOr(compact_phase_failed, 1u);
+                    } else {
+                        compact_matrix[matrix_cell] = quotient;
+                        compact_reflector[row] = quotient;
+                    }
+                }
+                const uint tail_offset = reflector_tail_offset(column);
+                scratch.values[
+                    tails_base + tail_offset + row - leading_row - 1u] =
+                    compact_matrix[matrix_cell];
+            }
+        }
+        barrier();
+
+        if (local_lane < element_count) {
+            const uint row = local_lane;
+            compact_product[row] = l_zero;
+            compact_dot_terms[row] = l_zero;
+            if (compact_phase_failed == 0u &&
+                compact_control == compact_control_active &&
+                row >= leading_row) {
+                for (uint inner = leading_row; inner < element_count; ++inner) {
+                    const uvec2 matrix_vector = l_multiply(
+                        compact_matrix[matrix_index(0u, row, inner)],
+                        compact_reflector[inner]);
+                    compact_product[row] = l_add(
+                        compact_product[row],
+                        l_multiply(compact_current_tau, matrix_vector));
+                }
+                compact_dot_terms[row] = l_multiply(
+                    compact_product[row], compact_reflector[row]);
+            }
+        }
+        barrier();
+
+        if (local_lane == 0u) {
+            compact_correction_scale = l_zero;
+            if (compact_phase_failed == 0u &&
+                compact_control == compact_control_active) {
+                uvec2 dot_product = l_zero;
+                for (uint row = leading_row; row < element_count; ++row) {
+                    dot_product = l_add(
+                        dot_product, compact_dot_terms[row]);
+                }
+                compact_correction_scale = l_negate(
+                    l_multiply(
+                        l_multiply(l_half, compact_current_tau), dot_product));
+            }
+        }
+        barrier();
+
+        if (local_lane < element_count) {
+            const uint row = local_lane;
+            if (compact_phase_failed == 0u &&
+                compact_control == compact_control_active &&
+                row >= leading_row) {
+                compact_product[row] = l_add(
+                    compact_product[row], l_multiply(
+                        compact_correction_scale, compact_reflector[row]));
+            }
+        }
+        barrier();
+
+        if (compact_phase_failed == 0u &&
+            compact_control == compact_control_active) {
+            for (uint cell = local_lane; cell < matrix_count;
+                 cell += gl_WorkGroupSize.x) {
+                const uint row = cell / element_count;
+                const uint inner = cell - row * element_count;
+                if (row >= leading_row && inner >= leading_row) {
+                    const uvec2 symmetric_correction = l_add(
+                        l_multiply(
+                            compact_product[row], compact_reflector[inner]),
+                        l_multiply(
+                            compact_reflector[row], compact_product[inner]));
+                    compact_matrix[cell] = l_subtract(
+                        compact_matrix[cell], symmetric_correction);
+                }
+            }
+        }
+        barrier();
+    }
+
+    if (compact_phase_failed == 0u) {
+        const uint diagonal_base = current_scratch_index(
+            diagonal_logical_offset);
+        const uint subdiagonal_base = current_scratch_index(
+            subdiagonal_logical_offset);
+        for (uint index = local_lane; index < matrix_count;
+             index += gl_WorkGroupSize.x) {
+            scratch.values[covariance_base + index] = compact_matrix[index];
+        }
+        if (local_lane < element_count) {
+            scratch.values[diagonal_base + local_lane] =
+                compact_matrix[matrix_index(0u, local_lane, local_lane)];
+            if (local_lane + 1u < element_count) {
+                scratch.values[subdiagonal_base + local_lane] =
+                    compact_matrix[
+                        matrix_index(0u, local_lane + 1u, local_lane)];
+            }
+        }
+    }
+    barrier();
+
+    if (local_lane == 0u && compact_phase_failed == 0u) {
+        const int matrix_exponent = int(scratch.values[
+            current_scratch_index(matrix_exponent_logical_offset)].x);
+        const uint diagnostic_diagonal_base = current_scratch_index(
+            diagnostic_diagonal_logical_offset);
+        const uint diagnostic_subdiagonal_base = current_scratch_index(
+            diagnostic_subdiagonal_logical_offset);
+        for (uint index = 0u; index < element_count; ++index) {
+            if (!l_to_q32_scaled_checked(
+                    compact_matrix[matrix_index(0u, index, index)],
+                    -matrix_exponent,
+                    scratch.values[diagnostic_diagonal_base + index])) {
+                compact_phase_failed = 1u;
+                break;
+            }
+        }
+        if (compact_phase_failed == 0u) {
+            for (uint index = 0u; index + 1u < element_count; ++index) {
+                if (!l_to_q32_scaled_checked(
+                        compact_matrix[matrix_index(0u, index + 1u, index)],
+                        -matrix_exponent,
+                        scratch.values[
+                            diagnostic_subdiagonal_base + index])) {
+                    compact_phase_failed = 1u;
+                    break;
+                }
+            }
+        }
+    }
+    barrier();
+
+    if (local_lane == 0u && current_parameter_stream() < 4u &&
+        compact_phase_failed != 0u) {
+        results.values[current_stream_state_index()].x |=
+            stream_arithmetic_failure_flag;
+    }
+}
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 6
+bool classify_covariance_regularity_cooperatively(
+    int matrix_exponent, out uint negative_pivot_count,
+    out uint stabilized_pivot_count) {
+    const uint local_lane = gl_LocalInvocationID.x;
+    const uint diagonal_base = current_scratch_index(
+        diagonal_logical_offset);
+    const uint subdiagonal_base = current_scratch_index(
+        subdiagonal_logical_offset);
+    uvec2 shifted_epsilon;
+    if (!l_convert_public_with_exponent(
+            q_public_epsilon, matrix_exponent, shifted_epsilon)) {
+        return false;
+    }
+
+    uint sign_variation_count = 0u;
+    uint exact_zero_count = 0u;
+    uint block_start = 0u;
+    while (block_start < element_count) {
+        uint block_end = block_start;
+        while (block_end + 1u < element_count &&
+               !cv_u64_is_zero(scratch.values[
+                   subdiagonal_base + block_end])) {
+            ++block_end;
+        }
+
+        uint previous_polynomial_slot = exact_polynomial_previous_slot;
+        uint current_polynomial_slot = exact_polynomial_current_slot;
+        uint next_polynomial_slot = exact_polynomial_next_slot;
+        initialize_polynomial_pair_cooperatively(
+            previous_polynomial_slot, current_polynomial_slot);
+        int previous_nonzero_sign = 1;
+
+        for (uint index = block_start; index <= block_end; ++index) {
+            uvec2 shifted_diagonal_raw;
+            if (!subtract_i64_checked(
+                    scratch.values[diagonal_base + index],
+                    shifted_epsilon, shifted_diagonal_raw)) {
+                return false;
+            }
+
+            if (index == block_start) {
+                make_wide_signed_cooperatively(
+                    shifted_diagonal_raw, next_polynomial_slot);
+                // Preserve p0, then switch two slots for the newly written p1.
+                const uint invalidated_current_slot = current_polynomial_slot;
+                current_polynomial_slot = next_polynomial_slot;
+                next_polynomial_slot = invalidated_current_slot;
+            } else {
+                const uvec2 coupling_magnitude = cv_i64_magnitude(
+                    scratch.values[subdiagonal_base + index - 1u]);
+                const uvec4 coupling_square = cv_u64_multiply(
+                    coupling_magnitude, coupling_magnitude);
+                if (!multiply_recurrence_products_cooperatively(
+                        current_polynomial_slot, shifted_diagonal_raw,
+                        previous_polynomial_slot, coupling_square)) {
+                    return false;
+                }
+                if (!subtract_wide_signed_cooperatively(
+                        exact_diagonal_product_slot,
+                        exact_coupling_product_slot,
+                        next_polynomial_slot)) {
+                    return false;
+                }
+                const uint invalidated_previous_slot =
+                    previous_polynomial_slot;
+                previous_polynomial_slot = current_polynomial_slot;
+                current_polynomial_slot = next_polynomial_slot;
+                next_polynomial_slot = invalidated_previous_slot;
+            }
+
+            if (local_lane == 0u) {
+                if (exact_wide_signs[current_polynomial_slot] == 0) {
+                    ++exact_zero_count;
+                } else {
+                    if (exact_wide_signs[current_polynomial_slot] !=
+                        previous_nonzero_sign) {
+                        ++sign_variation_count;
+                    }
+                    previous_nonzero_sign =
+                        exact_wide_signs[current_polynomial_slot];
+                }
+            }
+        }
+        block_start = block_end + 1u;
+    }
+    if (local_lane == 0u) {
+        negative_pivot_count = sign_variation_count;
+        stabilized_pivot_count = exact_zero_count;
+    }
+    return true;
+}
+#endif
+
+bool factor_positive_definite_tridiagonal() {
+    const uint diagonal_base = current_scratch_index(
+        diagonal_logical_offset);
+    const uint subdiagonal_base = current_scratch_index(
+        subdiagonal_logical_offset);
+    const uint pivots_base = current_scratch_index(
+        ldl_pivots_logical_offset);
+    const uint multipliers_base = current_scratch_index(
+        ldl_multipliers_logical_offset);
+
+    scratch.values[pivots_base] = scratch.values[diagonal_base];
+    if (!l_less(l_zero, scratch.values[pivots_base])) return false;
+    for (uint index = 0u; index + 1u < element_count; ++index) {
+        uvec2 multiplier;
+        if (!l_divide(
+                scratch.values[subdiagonal_base + index],
+                scratch.values[pivots_base + index], multiplier)) {
+            return false;
+        }
+        scratch.values[multipliers_base + index] = multiplier;
+        scratch.values[pivots_base + index + 1u] = l_subtract(
+            scratch.values[diagonal_base + index + 1u],
+            l_multiply(
+                multiplier, scratch.values[subdiagonal_base + index]));
+        if (!l_less(l_zero, scratch.values[pivots_base + index + 1u])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 6
+bool finish_compact_tridiagonal_factorization(
+    uint negative_pivot_count, uint stabilized_pivot_count) {
+    const uint state_index = current_stream_state_index();
+    scratch.values[current_scratch_index(regularity_metadata_logical_offset)] =
+        uvec2(negative_pivot_count, stabilized_pivot_count);
+    const bool singular = negative_pivot_count != 0u;
+    if (!singular && !factor_positive_definite_tridiagonal()) return false;
+
+    const uint prior_flags = results.values[state_index].x;
+    results.values[state_index] =
+        uvec2(prior_flags | (singular ? stream_singular_flag : 0u), 0u);
+    return true;
+}
+
+void classify_and_factor_compact_tridiagonal_cooperatively() {
+    const uint local_lane = gl_LocalInvocationID.x;
+    for (uint flat_limb_index = local_lane;
+         flat_limb_index <
+            characteristic_integer_limb_count * exact_wide_slot_count;
+         flat_limb_index += gl_WorkGroupSize.x) {
+        exact_wide_limbs[flat_limb_index] = 0u;
+    }
+    if (local_lane < exact_wide_slot_count) {
+        exact_wide_used_limb_counts[local_lane] = 0u;
+        exact_wide_signs[local_lane] = 0;
+    }
+    if (local_lane == 0u) {
+        exact_phase_failed = current_parameter_stream() >= 4u ? 1u : 0u;
+    }
+    barrier();
+
+    if (local_lane == 0u && exact_phase_failed == 0u) {
+        const uint state_index = current_stream_state_index();
+        if ((results.values[state_index].x &
+                stream_arithmetic_failure_flag) != 0u) {
+            exact_phase_failed = 1u;
+        } else {
+            // Keep the exact recurrence inside the liveness workaround after
+            // the production dispatch split.
+            scratch.values[current_scratch_index(
+                factor_liveness_dimensions_logical_offset)] = uvec2(
+                parameters.submatrix_width,
+                parameters.covariance_sample_count);
+            scratch.values[current_scratch_index(
+                factor_liveness_shape_logical_offset)] = uvec2(
+                parameters.operating_width, parameters.block_count);
+        }
+    }
+    barrier();
+
+    if (exact_phase_failed == 0u) {
+        const int matrix_exponent = int(scratch.values[
+            current_scratch_index(matrix_exponent_logical_offset)].x);
+        uint negative_pivot_count = 0u;
+        uint stabilized_pivot_count = 0u;
+        const bool classification_succeeded =
+            classify_covariance_regularity_cooperatively(
+                matrix_exponent, negative_pivot_count,
+                stabilized_pivot_count);
+        if (local_lane == 0u) {
+            const uint state_index = current_stream_state_index();
+            if (!classification_succeeded ||
+                !finish_compact_tridiagonal_factorization(
+                    negative_pivot_count, stabilized_pivot_count)) {
+                results.values[state_index].x |=
+                    stream_arithmetic_failure_flag;
+                exact_phase_failed = 1u;
+            }
+        }
+    }
+    barrier();
+}
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 3
+void transform_right_hand_side_cooperatively(uint block) {
+    const uint lane = gl_LocalInvocationID.x;
+    if (lane == 0u) {
+        uvec2 largest_right_hand_side_magnitude = q_zero;
+        for (uint row = 0u; row < element_count; ++row) {
+            const uint start_row = row / block_size;
+            const uint start_column = row - start_row * block_size;
+            const uint block_row = block / parameters.blocks_horizontal;
+            const uint block_column =
+                block - block_row * parameters.blocks_horizontal;
+            const uint source_row = start_row + block_row * block_size;
+            const uint source_column =
+                start_column + block_column * block_size;
+            block_transformed_values[row] = load_quantized_feature_sample(
+                source_row * parameters.operating_width + source_column);
+            const uvec2 magnitude = cv_i64_magnitude(
+                block_transformed_values[row]);
+            if (cv_u64_less(largest_right_hand_side_magnitude, magnitude)) {
+                largest_right_hand_side_magnitude = magnitude;
+            }
+        }
+        block_right_hand_side_exponent =
+            q_normalization_exponent_from_magnitude(
+                largest_right_hand_side_magnitude) - 16;
+        for (uint row = 0u; row < element_count; ++row) {
+            const uvec2 public_value = block_transformed_values[row];
+            if (!l_convert_public_with_exponent(
+                    public_value, block_right_hand_side_exponent,
+                    block_transformed_values[row])) {
+                block_phase_failed = 1u;
+                break;
+            }
+        }
+    }
+    barrier();
+
+    const uint tau_base = current_scratch_index(
+        reflector_tau_logical_offset);
+    const uint tails_base = current_scratch_index(
+        reflector_tails_logical_offset);
+    for (uint reflector_index = 0u;
+         reflector_index < reflector_count; ++reflector_index) {
+        const uint leading_row = reflector_index + 1u;
+        const uint tail_offset = reflector_tail_offset(reflector_index);
+        const uvec2 tau = scratch.values[tau_base + reflector_index];
+        const bool reflector_is_active = !cv_u64_is_zero(tau);
+        if (block_phase_failed == 0u && reflector_is_active) {
+            if (lane == 0u) {
+                block_phase_values[0] =
+                    block_transformed_values[leading_row];
+            } else {
+                const uint product_row = leading_row + lane;
+                if (product_row < element_count) {
+                    const uvec2 tail = scratch.values[
+                        tails_base + tail_offset + lane - 1u];
+                    block_phase_values[lane] = l_multiply(
+                        tail, block_transformed_values[product_row]);
+                }
+            }
+        }
+        barrier();
+
+        if (lane == 0u && block_phase_failed == 0u &&
+            reflector_is_active) {
+            uvec2 dot_product = block_phase_values[0];
+            const uint product_count = element_count - leading_row;
+            for (uint product_index = 1u;
+                 product_index < product_count; ++product_index) {
+                dot_product = l_add(
+                    dot_product, block_phase_values[product_index]);
+            }
+            block_reflector_scaled_dot = l_multiply(tau, dot_product);
+        }
+        barrier();
+
+        const uint row = leading_row + lane;
+        if (block_phase_failed == 0u && reflector_is_active &&
+            row < element_count) {
+            if (lane == 0u) {
+                block_transformed_values[row] = l_subtract(
+                    block_transformed_values[row],
+                    block_reflector_scaled_dot);
+            } else {
+                const uvec2 tail = scratch.values[
+                    tails_base + tail_offset + lane - 1u];
+                block_transformed_values[row] = l_subtract(
+                    block_transformed_values[row],
+                    l_multiply(tail, block_reflector_scaled_dot));
+            }
+        }
+        barrier();
+    }
+}
+#endif
+
+bool logarithm_of_positive_value(uvec2 value, out uvec2 logarithm) {
+    if (!l_less(l_zero, value)) return false;
+    const int value_exponent = l_value_normalization_exponent(value);
+    const uvec2 normalized = l_scale(value, value_exponent);
+    uvec2 normalized_public;
+    if (!l_to_q32_scaled_checked(normalized, 0, normalized_public)) {
+        return false;
+    }
+    uvec2 normalized_logarithm;
+    if (!q_log2(normalized_public, normalized_logarithm)) {
+        return false;
+    }
+    logarithm = q_subtract(
+        normalized_logarithm, q_from_int(value_exponent));
+    return true;
+}
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 3
+void publish_transformed_right_hand_side(uint block) {
+    const uint lane = gl_LocalInvocationID.x;
+    if (lane == 0u) block_phase_failed = 0u;
+    barrier();
+
+    const bool singular =
+        (results.values[current_stream_state_index()].x &
+            stream_singular_flag) != 0u;
+    if (!singular) {
+        transform_right_hand_side_cooperatively(block);
+    }
+    barrier();
+
+    if (!singular && block_phase_failed == 0u) {
+        const uint intermediate_base = current_scratch_index(
+            block_intermediate_base(block));
+        if (lane < element_count) {
+            scratch.values[intermediate_base + lane] =
+                block_transformed_values[lane];
+        }
+        if (lane == 0u) {
+            scratch.values[intermediate_base + element_count] =
+                uvec2(uint(block_right_hand_side_exponent), 0u);
+        }
+    }
+}
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 7
+bool compute_inverse_quadratic_form_scalar(
+    uint block, out uvec2 variance) {
+    const bool singular =
+        (results.values[current_stream_state_index()].x &
+            stream_singular_flag) != 0u;
+    if (singular) {
+        variance = q_zero;
+        return true;
+    }
+
+    const uint intermediate_base = current_scratch_index(
+        block_intermediate_base(block));
+    const int right_hand_side_exponent = int(
+        scratch.values[intermediate_base + element_count].x);
+    const uint multipliers_base = current_scratch_index(
+        ldl_multipliers_logical_offset);
+    const uint pivots_base = current_scratch_index(
+        ldl_pivots_logical_offset);
+
+    uvec2 quadratic_form = l_zero;
+    uvec2 previous_forward_value = scratch.values[intermediate_base];
+    uvec2 term;
+    if (!l_divide(
+            l_multiply(previous_forward_value, previous_forward_value),
+            scratch.values[pivots_base], term)) {
+        return false;
+    }
+    quadratic_form = l_add(quadratic_form, term);
+
+    for (uint row = 1u; row < element_count; ++row) {
+        const uvec2 current_forward_value = l_subtract(
+            scratch.values[intermediate_base + row],
+            l_multiply(
+                scratch.values[multipliers_base + row - 1u],
+                previous_forward_value));
+        if (!l_divide(
+                l_multiply(
+                    current_forward_value, current_forward_value),
+                scratch.values[pivots_base + row], term)) {
+            return false;
+        }
+        quadratic_form = l_add(quadratic_form, term);
+        previous_forward_value = current_forward_value;
+    }
+
+    uvec2 quadratic_form_average;
+    if (!l_divide(
+            quadratic_form, l_from_uint(element_count),
+            quadratic_form_average)) {
+        return false;
+    }
+    const int matrix_exponent = int(scratch.values[
+        current_scratch_index(matrix_exponent_logical_offset)].x);
+    return l_to_q32_scaled_checked(
+        quadratic_form_average,
+        matrix_exponent - 2 * right_hand_side_exponent,
+        variance);
+}
+
+bool add_pivot_logarithm(
+    uvec2 pivot, inout uvec2 logarithm_sum) {
+    uvec2 pivot_logarithm;
+    if (!logarithm_of_positive_value(pivot, pivot_logarithm)) {
+        return false;
+    }
+    logarithm_sum = q_add(logarithm_sum, pivot_logarithm);
+    return true;
+}
+
+bool compute_entropy_scalar(uvec2 variance, out uvec2 entropy) {
+    if (cv_i64_negative(variance) || !q_less(q_zero, q_sigma())) return false;
+    const int variance_exponent = q_normalization_exponent_from_magnitude(
+        cv_i64_magnitude(variance));
+    const int sigma_exponent = q_normalization_exponent_from_magnitude(
+        cv_i64_magnitude(q_sigma()));
+    uvec2 normalized_variance;
+    uvec2 normalized_sigma;
+    if (!l_convert_public_with_exponent(
+            variance, variance_exponent, normalized_variance) ||
+        !l_convert_public_with_exponent(
+            q_sigma(), sigma_exponent, normalized_sigma)) {
+        return false;
+    }
+    const int matrix_exponent = int(scratch.values[
+        current_scratch_index(matrix_exponent_logical_offset)].x);
+    const int covariance_product_exponent =
+        matrix_exponent + variance_exponent;
+    const int shifted_matrix_exponent = cv_u64_is_zero(variance)
+        ? sigma_exponent
+        : min(covariance_product_exponent, sigma_exponent);
+    const uvec2 aligned_sigma = l_scale(
+        normalized_sigma,
+        shifted_matrix_exponent - sigma_exponent);
+
+    const uint diagonal_base = current_scratch_index(
+        diagonal_logical_offset);
+    const uint subdiagonal_base = current_scratch_index(
+        subdiagonal_logical_offset);
+    const int covariance_alignment_exponent =
+        shifted_matrix_exponent - covariance_product_exponent;
+    uvec2 current_diagonal_pivot = l_add(
+        aligned_sigma,
+        l_scale(
+            l_multiply(
+                normalized_variance,
+                scratch.values[diagonal_base]),
+            covariance_alignment_exponent));
+    if (!l_less(l_zero, current_diagonal_pivot)) return false;
+
+    uvec2 logarithm_sum = q_zero;
+    if (!add_pivot_logarithm(
+            current_diagonal_pivot, logarithm_sum)) {
+        return false;
+    }
+
+    for (uint index = 0u; index + 1u < element_count; ++index) {
+        const uvec2 current_shifted_subdiagonal = l_scale(
+            l_multiply(
+                normalized_variance,
+                scratch.values[subdiagonal_base + index]),
+            covariance_alignment_exponent);
+        uvec2 multiplier;
+        if (!l_divide(
+                current_shifted_subdiagonal, current_diagonal_pivot,
+                multiplier)) {
+            return false;
+        }
+        const uvec2 next_shifted_diagonal = l_add(
+            aligned_sigma,
+            l_scale(
+                l_multiply(
+                    normalized_variance,
+                    scratch.values[diagonal_base + index + 1u]),
+                covariance_alignment_exponent));
+        const uvec2 next_diagonal_pivot = l_subtract(
+            next_shifted_diagonal,
+            l_multiply(multiplier, current_shifted_subdiagonal));
+        if (!l_less(l_zero, next_diagonal_pivot)) return false;
+        if (!add_pivot_logarithm(
+                next_diagonal_pivot, logarithm_sum)) {
+            return false;
+        }
+        current_diagonal_pivot = next_diagonal_pivot;
+    }
+
+    entropy = q_subtract(
+        logarithm_sum,
+        q_from_int(shifted_matrix_exponent * int(element_count)));
+    for (uint index = 0u; index < element_count; ++index) {
+        entropy = q_add(entropy, q_log2_two_pi_e);
+    }
+    return true;
+}
+
+bool compute_block_statistics_scalar(uint block) {
+    uvec2 variance;
+    if (!compute_inverse_quadratic_form_scalar(block, variance)) {
+        return false;
+    }
+    uvec2 entropy;
+    if (!compute_entropy_scalar(variance, entropy)) return false;
+
+    scratch.values[current_scratch_index(
+        entropy_logical_offset() + block)] = entropy;
+    scratch.values[current_scratch_index(
+        variance_logical_offset() + block)] = variance;
+    return true;
+}
+#endif
+
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 4
+// Computes the deterministic per-block contribution used by the tiled fold.
+// The skip tests and both q_log2 calls retain the original order and every
+// intermediate binary32 quantization point. finalize_base_entropy is staged
+// once by lane 0 and read here by every lane of the workgroup.
+uvec2 finalize_block_contribution(uint channel, uint block,
+                                  out uint contribution_valid) {
+    const uint reference_stream = channel * 2u;
+    const uint distorted_stream = reference_stream + 1u;
+    const uint reference_entropy = scratch_index_for_stream(
+        reference_stream, entropy_logical_offset());
+    const uint reference_variance = scratch_index_for_stream(
+        reference_stream, variance_logical_offset());
+    const uint distorted_entropy = scratch_index_for_stream(
+        distorted_stream, entropy_logical_offset());
+    const uint distorted_variance = scratch_index_for_stream(
+        distorted_stream, variance_logical_offset());
+
+    const uvec2 reference_entropy_value =
+        scratch.values[reference_entropy + block];
+    const uvec2 distorted_entropy_value =
+        scratch.values[distorted_entropy + block];
+    const uvec2 reference_variance_value =
+        scratch.values[reference_variance + block];
+    const uvec2 distorted_variance_value =
+        scratch.values[distorted_variance + block];
+
+    if ((q_less(reference_entropy_value, finalize_base_entropy) &&
+         q_less(distorted_entropy_value, finalize_base_entropy)) ||
+        (cv_u64_equal(reference_entropy_value, distorted_entropy_value) &&
+         cv_u64_equal(reference_variance_value, distorted_variance_value))) {
+        contribution_valid = 1u;
+        return q_zero;
+    }
+
+    uvec2 reference_log;
+    if (!q_log2(q_add(q_one, reference_variance_value), reference_log)) {
+        contribution_valid = 0u;
+        return q_zero;
+    }
+    const uvec2 weighted_variance = cv_u64_equal(
+        reference_variance_value, distorted_variance_value)
+        ? reference_variance_value
+        : cv_q32_add_saturating(
+            cv_q32_multiply_rne(q_three_quarters, reference_variance_value),
+            cv_q32_multiply_rne(q_quarter, distorted_variance_value));
+    uvec2 distorted_log;
+    if (!q_log2(cv_q32_add_saturating(q_one, weighted_variance),
+                distorted_log)) {
+        contribution_valid = 0u;
+        return q_zero;
+    }
+    const uvec2 spatial_reference = q_multiply(
+        reference_entropy_value, reference_log);
+    const uvec2 spatial_distorted = q_multiply(
+        distorted_entropy_value, distorted_log);
+    contribution_valid = 1u;
+    return q_absolute(q_subtract(spatial_reference, spatial_distorted));
+}
+
+uvec2 clip_score(uvec2 score, uvec2 maximum) {
+    return q_less(maximum, score) ? maximum : score;
+}
+
+void finalize_scores() {
+    const uint local_lane = gl_LocalInvocationID.x;
+    const uint channel = local_lane >> 5u;
+    const uint lane_in_half = local_lane & 31u;
+
+    // base_log/base_entropy are channel-independent, so compute them once.
+    if (local_lane == 0u) {
+        finalize_base_valid = 0u;
+        uvec2 base_log;
+        if (q_log2(
+                q_multiply(q_add(q_one, q_nn_floor()), q_sigma()),
+                base_log)) {
+            finalize_base_entropy = q_multiply(
+                q_from_uint(element_count),
+                cv_q32_add_saturating(base_log, q_log2_two_pi_e));
+            finalize_base_valid = 1u;
+        }
+    }
+    barrier();
+
+    const uint reference_stream = channel * 2u;
+    const uint distorted_stream = reference_stream + 1u;
+    const uvec2 reference_state = results.values[
+        stream_state_index_for(reference_stream)];
+    const uvec2 distorted_state = results.values[
+        stream_state_index_for(distorted_stream)];
+    const bool reference_singular =
+        (reference_state.x & stream_singular_flag) != 0u;
+    const bool distorted_singular =
+        (distorted_state.x & stream_singular_flag) != 0u;
+    const uint parameter_error_flags =
+        (reference_state.x | distorted_state.x) &
+        stream_arithmetic_failure_flag;
+
+    const bool score_requested = parameter_error_flags == 0u &&
+        reference_singular == distorted_singular &&
+        finalize_base_valid == 1u;
+
+    uvec2 score = q_zero;
+    uint score_valid = 1u;
+    // The tile loop and its barriers must stay uniform across all 64 lanes
+    // even when one channel is singular and the other is not. Per-channel
+    // work is gated by score_requested inside the uniform loop.
+    for (uint tile_start = 0u;
+         tile_start < parameters.block_count; tile_start += 32u) {
+        const uint block = tile_start + lane_in_half;
+        uint contribution_valid = 0u;
+        uvec2 contribution = q_zero;
+        if (score_requested && block < parameters.block_count) {
+            contribution = finalize_block_contribution(
+                channel, block, contribution_valid);
+        }
+        finalize_contributions[channel][lane_in_half] = contribution;
+        finalize_contribution_valid[channel][lane_in_half] =
+            contribution_valid;
+        barrier();
+
+        // lane 0 (U) and lane 32 (V) fold contributions in original
+        // block-index order, preserving every q_add quantization step.
+        if (lane_in_half == 0u && score_requested) {
+            for (uint index = 0u;
+                 index < 32u &&
+                 tile_start + index < parameters.block_count;
+                 ++index) {
+                if (finalize_contribution_valid[channel][index] == 0u) {
+                    score_valid = 0u;
+                } else {
+                    score = q_add(
+                        score, finalize_contributions[channel][index]);
+                }
+            }
+        }
+        barrier();
+    }
+
+    if (lane_in_half == 0u) {
+        bool channel_valid = parameter_error_flags == 0u;
+        uvec2 channel_score = q_zero;
+        if (channel_valid && reference_singular == distorted_singular) {
+            if (score_valid == 1u && finalize_base_valid == 1u &&
+                q_divide_by_u32(
+                    score, parameters.block_count_divider,
+                    channel_score)) {
+                channel_valid = true;
+            } else {
+                channel_valid = false;
+                channel_score = q_zero;
+            }
+        }
+        finalize_channel_scores[channel] = channel_score;
+        finalize_channel_flags[channel] = uvec2(
+            (reference_singular || distorted_singular ? 1u : 0u) |
+                parameter_error_flags | (channel_valid ? 0u : 2u),
+            (reference_state.y & 0xffffu) |
+                ((distorted_state.y & 0xffffu) << 16u));
+    }
+    barrier();
+
+    if (local_lane == 0u) {
+        const uvec2 maximum = uvec2(
+            parameters.maximum_low, parameters.maximum_high);
+        const bool u_singular = (finalize_channel_flags[0].x & 1u) != 0u;
+        const bool v_singular = (finalize_channel_flags[1].x & 1u) != 0u;
+        uvec2 uv_score = q_zero;
+        bool valid = true;
+        if (u_singular && !v_singular) {
+            uv_score = finalize_channel_scores[1];
+        } else if (v_singular && !u_singular) {
+            uv_score = finalize_channel_scores[0];
+        } else {
+            uv_score = cv_q32_half_rne(cv_q32_add_saturating(
+                finalize_channel_scores[0],
+                finalize_channel_scores[1]));
+        }
+        results.values[result_packet_index(0u)] =
+            clip_score(finalize_channel_scores[0], maximum);
+        results.values[result_packet_index(2u)] =
+            clip_score(finalize_channel_scores[1], maximum);
+        results.values[result_packet_index(1u)] = finalize_channel_flags[0];
+        results.values[result_packet_index(3u)] = finalize_channel_flags[1];
+        results.values[result_packet_index(4u)] =
+            clip_score(uv_score, maximum);
+        results.values[result_packet_index(5u)] = uvec2(
+            preprocessing_status.flags[
+                current_batch_frame() *
+                (parameters.status_frame_stride_elements == 0u
+                    ? 1u
+                    : parameters.status_frame_stride_elements)],
+            valid ? 0u : 1u);
+    }
+}
+#endif
+
+void main() {
+#if CROSSVMAF_SPEED_CHROMA_PIPELINE == 1
+    if (current_parameter_stream() >= 4u) return;
+    if (!initialize_grouped_mean()) {
+        atomicOr(
+            results.values[current_stream_state_index()].x,
+            stream_arithmetic_failure_flag);
+    }
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 2
+    reduce_to_compact_tridiagonal_cooperatively();
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 3
+    if (current_parameter_stream() >= 4u) return;
+    const uint block = gl_WorkGroupID.x;
+    if (block >= parameters.block_count) return;
+    const uint state_index = current_stream_state_index();
+    if ((results.values[state_index].x &
+            stream_arithmetic_failure_flag) == 0u) {
+        publish_transformed_right_hand_side(block);
+        if (gl_LocalInvocationID.x == 0u && block_phase_failed != 0u) {
+            atomicOr(
+                results.values[state_index].x,
+                stream_arithmetic_failure_flag);
+        }
+    }
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 4
+    finalize_scores();
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 5
+    if (current_parameter_stream() >= 4u) return;
+    if (parameters.covariance_sample_count <= 524288u) {
+        initialize_covariance_displacement(gl_WorkGroupID.x);
+    } else {
+        initialize_covariance_group(gl_WorkGroupID.x);
+    }
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 6
+    classify_and_factor_compact_tridiagonal_cooperatively();
+#elif CROSSVMAF_SPEED_CHROMA_PIPELINE == 7
+    if (current_parameter_stream() >= 4u) return;
+    const uint block = gl_GlobalInvocationID.x;
+    if (block >= parameters.block_count) return;
+    const uint state_index = current_stream_state_index();
+    if ((results.values[state_index].x &
+            stream_arithmetic_failure_flag) == 0u &&
+        !compute_block_statistics_scalar(block)) {
+        atomicOr(
+            results.values[state_index].x,
+            stream_arithmetic_failure_flag);
+    }
+#endif
+}

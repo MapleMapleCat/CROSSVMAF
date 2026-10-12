@@ -1,0 +1,146 @@
+// Design tokens. Dark values originate from the (since removed) docs/ui-fusion/
+// mockup.html「Darkroom Lab」neutral-gray + steel-blue scheme. Light uses soft
+// paper surfaces and ink blue, with opaque tints that stay consistent on both
+// the canvas and white cards. Dark remains the default.
+
+// Typography uses Inter + JetBrains Mono (both OFL).
+// The TTFs are embedded into the binary at compile time. CJK glyphs are not
+// covered by these fonts and fall back to the system font (Microsoft YaHei),
+// matching the mockup's own fallback chain.
+import "./fonts/Inter-ExtraLight.ttf";
+import "./fonts/Inter-Light.ttf";
+import "./fonts/Inter-Regular.ttf";
+import "./fonts/Inter-Medium.ttf";
+import "./fonts/Inter-SemiBold.ttf";
+import "./fonts/Inter-Bold.ttf";
+import "./fonts/JetBrainsMono-ExtraLight.ttf";
+import "./fonts/JetBrainsMono-Light.ttf";
+import "./fonts/JetBrainsMono-Regular.ttf";
+import "./fonts/JetBrainsMono-Medium.ttf";
+import "./fonts/JetBrainsMono-SemiBold.ttf";
+import "./fonts/JetBrainsMono-Bold.ttf";
+
+export global Theme {
+    in-out property <bool> dark: true;
+
+    out property <color> bg0: dark ? #16171A : #F5F7FA;
+    out property <color> bg1: dark ? #1D1F23 : #FFFFFF;
+    out property <color> bg2: dark ? #24262B : #FFFFFF;
+    out property <color> bg3: dark ? #2D3036 : #EDF1F6;
+    // --stroke / --stroke2
+    out property <color> stroke: dark ? #FFFFFF0E : #E1E6ED;
+    out property <color> stroke2: dark ? #FFFFFF1C : #CBD3DF;
+    // 1px outer frame of the frameless window (app.slint). Browser pages have
+    // no window chrome: no-frame means the OS draws neither border nor shadow,
+    // so bg0 dissolves into dark desktop backgrounds. Noticeably stronger than
+    // stroke2 so the edge reads on black wallpapers, still quiet next to the
+    // app's own surfaces.
+    out property <color> window-frame: dark ? #FFFFFF33 : #B8C3D2;
+    out property <color> text: dark ? #ECECEE : #202938;
+    out property <color> text2: dark ? #A4A7AD : #536176;
+    out property <color> text3: dark ? #6E7178 : #606D80;
+    out property <color> accent: dark ? #6FA8DC : #315FB8;
+    out property <color> accent-soft: dark ? #6FA8DC24 : #EAF0FC;
+    out property <color> accent-line: dark ? #6FA8DC52 : #BFCEEE;
+    out property <color> accent-strong: dark ? #4E87C2 : #315FC4;
+
+    // Control surfaces distinguish resting, selected and hovered states.
+    out property <color> input-surface: dark ? bg1 : #FBFCFE;
+    out property <color> segment-track: dark ? bg1 : #E9EEF5;
+    out property <color> segment-selected: dark ? bg3 : #FFFFFF;
+    out property <color> segment-label: dark ? text : accent;
+    out property <color> toggle-on: dark ? #6FA8DC4D : accent-strong;
+    out property <color> toggle-thumb: dark ? accent : #FFFFFF;
+    out property <color> primary-hover: dark ? accent : #264DA4;
+
+    // Quality text and marks need deeper pigments against light surfaces.
+    out property <color> excellent: dark ? #4EA97C : #247452;
+    out property <color> good: dark ? #9CBE5A : #53732C;
+    out property <color> fair: dark ? #D9A03F : #996514;
+    out property <color> poor: dark ? #C9615F : #B1464F;
+    out property <color> band-excellent: excellent;
+    out property <color> band-good: good;
+    out property <color> band-fair: fair;
+    out property <color> band-poor: poor;
+    out property <color> excellent-line: dark ? #4EA97C4D : #BBDCC9;
+    out property <color> excellent-bg: dark ? #4EA97C1F : #EAF5EE;
+    out property <color> good-line: dark ? #9CBE5A4D : #CDDBB3;
+    out property <color> good-bg: dark ? #9CBE5A1F : #F0F5E6;
+    out property <color> fair-line: dark ? #D9A03F4D : #E8D2A7;
+    out property <color> fair-bg: dark ? #D9A03F1F : #FCF3E3;
+    out property <color> poor-line: dark ? #C9615F59 : #E9C3C8;
+    out property <color> poor-bg: dark ? #C9615F1F : #FBEEEF;
+    out property <color> zone-excellent: dark ? #4EA97C0F : #F3F9F5;
+    out property <color> zone-fair: dark ? #D9A03F0D : #FCF8EF;
+    out property <color> zone-poor: dark ? #C9615F0F : #FCF3F3;
+
+    out property <color> row-hover: dark ? #94B2DC0A : #EBF0F8;
+    out property <color> popup-shadow: dark ? #00000040 : #2432471F;
+    out property <color> tooltip-shadow: dark ? #0000008C : #24324729;
+    out property <color> strip-frame: dark ? #FFFFFF1A : #20293826;
+    out property <color> marker-stroke: dark ? #00000066 : #FFFFFF;
+    out property <color> crosshair: dark ? #ECEEF440 : #53617666;
+    out property <color> close-hover: #E81123;
+    out property <color> primary-text: #FFFFFF;
+    out property <color> primary-hover-text: dark ? #10131A : #FFFFFF;
+
+    // Selection changes color and surface, keeping label metrics stable.
+    out property <int> selection-label-weight: 500;
+    out property <duration> selection-transition: 140ms;
+
+    out property <length> mono-size: 10.5px;
+    out property <string> mono-font: "JetBrains Mono";
+}
+
+// Quality band helper matching band() in the mockup.
+// kind: 0 excellent (>=93), 1 good (>=80), 2 fair (>=60), 3 poor (<60).
+export global Bands {
+    pure public function kind-of(v: float) -> int {
+        if (v >= 93) { return 0; }
+        if (v >= 80) { return 1; }
+        if (v >= 60) { return 2; }
+        return 3;
+    }
+    pure public function color-of(kind: int) -> color {
+        if (kind == 0) { return Theme.band-excellent; }
+        if (kind == 1) { return Theme.band-good; }
+        if (kind == 2) { return Theme.band-fair; }
+        return Theme.band-poor;
+    }
+    pure public function themed-color-of(kind: int) -> color {
+        if (kind == 0) { return Theme.excellent; }
+        if (kind == 1) { return Theme.good; }
+        if (kind == 2) { return Theme.fair; }
+        return Theme.poor;
+    }
+    pure public function line-of(kind: int) -> color {
+        if (kind == 0) { return Theme.excellent-line; }
+        if (kind == 1) { return Theme.good-line; }
+        if (kind == 2) { return Theme.fair-line; }
+        return Theme.poor-line;
+    }
+    pure public function bg-of(kind: int) -> color {
+        if (kind == 0) { return Theme.excellent-bg; }
+        if (kind == 1) { return Theme.good-bg; }
+        if (kind == 2) { return Theme.fair-bg; }
+        return Theme.poor-bg;
+    }
+    pure public function zone-of(kind: int) -> color {
+        if (kind == 0) { return Theme.zone-excellent; }
+        if (kind == 2) { return Theme.zone-fair; }
+        return Theme.zone-poor;
+    }
+}
+
+// Categorical colors for compared evaluations, 1-based slots. The hues avoid
+// the quality band colors, and each theme's four steps were checked as a set
+// against its card surface: every pair stays distinct in normal and
+// color-blind vision (OKLab ΔE ≥ 15 and ≥ 8) and every mark reaches 3:1.
+export global SeriesPalette {
+    pure public function color-of(slot: int) -> color {
+        if (slot == 1) { return Theme.dark ? #5797D1 : #2A78D6; }
+        if (slot == 2) { return Theme.dark ? #E0539B : #D64992; }
+        if (slot == 3) { return Theme.dark ? #8B54D4 : #6B26A5; }
+        return Theme.dark ? #A15F29 : #DC7C29;
+    }
+}

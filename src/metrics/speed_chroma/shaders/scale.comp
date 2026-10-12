@@ -1,0 +1,93 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 4, std430) buffer ScaleWorkspace {
+    uvec2 values[];
+} scale_workspace;
+
+layout(push_constant) uniform Parameters {
+    uint source_width;
+    uint source_height;
+    uint source_stride_bytes_0;
+    uint source_stride_bytes_1;
+    uint source_stride_bytes_2;
+    uint source_stride_bytes_3;
+    uint destination_width;
+    uint destination_height;
+    uint bit_depth;
+    uint method;
+    uint output_offset_elements;
+} parameters;
+
+#include "sampling.glsl"
+
+void axis_sample(uint map_index,
+                 out uint first, out uint second, out uvec2 fraction) {
+    const uvec2 axis_entry = scale_workspace.values[map_index];
+    first = axis_entry.x;
+    second = first + (axis_entry.y == 0u ? 0u : 1u);
+    fraction = uvec2(axis_entry.y, 0u);
+}
+
+void main() {
+    const uint column = gl_GlobalInvocationID.x;
+    const uint row = gl_GlobalInvocationID.y;
+    const uint stream = gl_GlobalInvocationID.z;
+    if (stream >= 4u) return;
+    if (column < parameters.source_width && row < parameters.source_height) {
+        validate_source_sample(row, column);
+    }
+    if (column >= parameters.destination_width ||
+        row >= parameters.destination_height) return;
+
+    int output_value = 0;
+    if (parameters.source_width == parameters.destination_width &&
+        parameters.source_height == parameters.destination_height) {
+        output_value = load_normalized(row, column);
+    } else if (parameters.method == 0u) {
+        const uint source_row = scale_workspace.values[
+            parameters.destination_width + row].x;
+        const uint source_column = scale_workspace.values[column].x;
+        output_value = load_normalized(source_row, source_column);
+    } else {
+        uint x1;
+        uint x2;
+        uint y1;
+        uint y2;
+        uvec2 dx;
+        uvec2 dy;
+        axis_sample(column, x1, x2, dx);
+        axis_sample(parameters.destination_width + row,
+                    y1, y2, dy);
+        const uvec2 one = uvec2(0u, 1u);
+        const uvec2 ix = cv_q32_subtract_saturating(one, dx);
+        const uvec2 iy = cv_q32_subtract_saturating(one, dy);
+        const uvec2 weights[4] = uvec2[4](
+            cv_q32_multiply_rne(iy, ix),
+            cv_q32_multiply_rne(iy, dx),
+            cv_q32_multiply_rne(dy, ix),
+            cv_q32_multiply_rne(dy, dx));
+        const int samples[4] = int[4](
+            load_normalized(y1, x1), load_normalized(y1, x2),
+            load_normalized(y2, x1), load_normalized(y2, x2));
+        uvec2 sum = uvec2(0u);
+        for (uint index = 0u; index < 4u; ++index) {
+            sum = cv_q32_add_saturating(
+                sum, cv_q32_multiply_rne(sample_q32(samples[index]),
+                                         weights[index]));
+        }
+        output_value = int(cv_i64_shift_right_rne(
+            sum, 32u - sample_fractional_bits).x);
+    }
+    const uint destination_element_count =
+        parameters.destination_width * parameters.destination_height;
+    const uint output_index = stream * destination_element_count +
+        row * parameters.destination_width + column;
+    scale_workspace.values[
+        parameters.output_offset_elements + output_index] =
+        cv_binary32_quantize(sample_q32(output_value));
+}

@@ -1,0 +1,132 @@
+// Shared presentation components. Data comes from properties, never the application VM.
+import { Theme } from "../theme.slint";
+
+// Application logo: rounded accent square with the white waveform stroke.
+export component Logo inherits Rectangle {
+    width: 18px;
+    height: 18px;
+    border-radius: 4.5px;
+    background: Theme.accent-strong;
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 18;
+        viewbox-height: 18;
+        commands: "M4 10.5l2.6-3 2.1 4 2.2-6 2.9 5";
+        stroke: #FFFFFF;
+        stroke-width: 1.5px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+        fill: #00000000;
+    }
+}
+
+// .card
+export component Card inherits Rectangle {
+    background: Theme.bg2;
+    border-width: 1px;
+    border-color: Theme.stroke;
+    border-radius: 10px;
+}
+
+// field label (uppercase caption above inputs)
+export component FieldLabel inherits Text {
+    font-size: 11px;
+    letter-spacing: 0.66px;
+    color: Theme.text3;
+    font-weight: 500;
+}
+
+// .h1 page title
+export component H1 inherits Text {
+    font-size: 22px;
+    font-weight: 650;
+    letter-spacing: 0.2px;
+    color: Theme.text;
+}
+
+// .sub page subtitle
+export component Sub inherits Text {
+    font-size: 12.5px;
+    color: Theme.text3;
+}
+
+// h3 card title
+export component H3 inherits Text {
+    font-size: 14px;
+    font-weight: 620;
+    color: Theme.text;
+}
+
+// .desc card description
+export component Desc inherits Text {
+    font-size: 11.5px;
+    color: Theme.text3;
+    wrap: word-wrap;
+    min-width: 0px;
+}
+
+// Actions keep their natural width; long descriptions use the remaining space.
+export component PageHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    in property <bool> mono: false;
+    height: 54px;
+    header-copy := VerticalLayout {
+        x: 0px;
+        y: 0px;
+        width: max(0px, root.width - actions.width - 16px);
+        height: root.height;
+        spacing: 5px;
+        H1 { text: root.title; }
+        Text {
+            text: root.description;
+            font-family: root.mono ? Theme.mono-font : "Inter";
+            font-size: root.mono ? 11.5px : 12.5px;
+            color: Theme.text3;
+            min-width: 0px;
+            overflow: elide;
+        }
+    }
+    actions := HorizontalLayout {
+        x: root.width - self.width;
+        y: 0px;
+        width: self.preferred-width;
+        height: root.height;
+        spacing: 10px;
+        alignment: start;
+        @children
+    }
+}
+
+// Check, pending or problem mark in front of a status text.
+export component StatusMark inherits Image {
+    in property <int> kind; // 0 = neutral, 1 = ok, 2 = problem
+    width: 15px;
+    height: 15px;
+    source: kind == 1 ? @image-url("../icons/check.svg") : kind == 2 ? @image-url("../icons/x.svg") : @image-url("../icons/info.svg");
+    colorize: kind == 1 ? Theme.accent : kind == 2 ? Theme.poor : Theme.text3;
+}
+
+export component ActionMessage inherits VerticalLayout {
+    in property <bool> shown: false;
+    in property <string> text;
+    in property <int> kind: 0;
+    if root.shown: Rectangle {
+        height: 38px;
+        border-radius: 8px;
+        background: root.kind == 2 ? Theme.poor-bg : Theme.bg2;
+        border-width: 1px;
+        border-color: root.kind == 2 ? Theme.poor-line : Theme.stroke2;
+        Text {
+            x: 12px;
+            width: parent.width - 24px;
+            text: root.text;
+            font-size: 11.5px;
+            color: root.kind == 2 ? Theme.poor : Theme.text2;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    if root.shown: Rectangle { height: 16px; }
+}

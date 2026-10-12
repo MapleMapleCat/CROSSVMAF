@@ -1,0 +1,80 @@
+{
+  "version": 8,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-llvm",
+      "hidden": true,
+      "environment": {
+        "CROSSVMAF_LLVM_ROOT": "$penv{ProgramFiles}/LLVM",
+        "PATH": "$env{CROSSVMAF_LLVM_ROOT}/bin;$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": { "type": "FILEPATH", "value": "$env{CROSSVMAF_LLVM_ROOT}/bin/clang-cl.exe" },
+        "CMAKE_CXX_COMPILER": { "type": "FILEPATH", "value": "$env{CROSSVMAF_LLVM_ROOT}/bin/clang-cl.exe" },
+        "CMAKE_LINKER": { "type": "FILEPATH", "value": "$env{CROSSVMAF_LLVM_ROOT}/bin/lld-link.exe" },
+        "CMAKE_AR": { "type": "FILEPATH", "value": "$env{CROSSVMAF_LLVM_ROOT}/bin/llvm-lib.exe" },
+        "CMAKE_RC_COMPILER": { "type": "FILEPATH", "value": "$env{CROSSVMAF_LLVM_ROOT}/bin/llvm-rc.exe" },
+        "CMAKE_MT": { "type": "FILEPATH", "value": "$env{CROSSVMAF_LLVM_ROOT}/bin/llvm-mt.exe" }
+      }
+    },
+    {
+      "name": "windows-debug",
+      "inherits": "windows-llvm",
+      "displayName": "Windows Debug",
+      "generator": "Ninja Multi-Config",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "binaryDir": "${sourceDir}/build/windows-debug",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
+        "CMAKE_DEFAULT_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/.cache/fetchcontent",
+        "CROSSVMAF_BUILD_TOOLS": "ON",
+        "CROSSVMAF_ENABLE_QSV": "ON",
+        "CROSSVMAF_ENABLE_NVDEC": "ON"
+      }
+    },
+    {
+      "name": "windows-release",
+      "inherits": "windows-llvm",
+      "displayName": "Windows Release",
+      "generator": "Ninja Multi-Config",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "binaryDir": "${sourceDir}/build/windows-release",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
+        "CMAKE_DEFAULT_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/.cache/fetchcontent",
+        "CROSSVMAF_BUILD_TOOLS": "ON",
+        "CROSSVMAF_ENABLE_QSV": "ON",
+        "CROSSVMAF_ENABLE_NVDEC": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "configuration": "Release"
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputImage {
+    uint values[];
+} input_image;
+layout(set = 0, binding = 1, std430) writeonly buffer OutputImage {
+    uint values[];
+} output_image;
+layout(set = 0, binding = 2, std430) readonly buffer Mask {
+    uint values[];
+} mask;
+layout(set = 0, binding = 3, std430) writeonly buffer NextImage {
+    uint values[];
+} next_image;
+layout(set = 0, binding = 4, std430) writeonly buffer NextMask {
+    uint values[];
+} next_mask;
+
+layout(push_constant) uniform Parameters {
+    uint width;
+    uint height;
+    uint produce_next_scale;
+} parameters;
+
+const uint active_mask_bit = 0x80000000u;
+const uint value_band_base = 67u;
+const uint value_band_size = 497u;
+
+uint mode3(uint a, uint b, uint c) {
+    if (a == b || a == c) return a;
+    if (b == c) return b;
+    return min(a, min(b, c));
+}
+
+uint horizontal(uint row, uint column) {
+    const uint index = row * parameters.width + column;
+    if (column == 0u || column + 1u == parameters.width) {
+        return input_image.values[index];
+    }
+    return mode3(input_image.values[index - 1u], input_image.values[index],
+                 input_image.values[index + 1u]);
+}
+
+void main() {
+    const uint column = gl_GlobalInvocationID.x;
+    const uint row = gl_GlobalInvocationID.y;
+    if (column >= parameters.width || row >= parameters.height) return;
+    const uint index = row * parameters.width + column;
+    const uint mode_luma = row == 0u || row + 1u == parameters.height
+        ? input_image.values[index]
+        : mode3(horizontal(row - 1u, column), horizontal(row, column),
+                horizontal(row + 1u, column));
+    const uint compact_luma = mode_luma - value_band_base;
+    const bool histogram_eligible =
+        mask.values[index] != 0u && compact_luma < value_band_size;
+    output_image.values[index] = mode_luma |
+        (histogram_eligible ? active_mask_bit : 0u);
+    if (parameters.produce_next_scale != 0u && ((row | column) & 1u) == 0u) {
+        const uint next_width = (parameters.width + 1u) / 2u;
+        const uint next_index = (row / 2u) * next_width + column / 2u;
+        next_image.values[next_index] = mode_luma;
+        // Eligibility belongs to this scale's histogram, not the mask pyramid.
+        next_mask.values[next_index] = mask.values[index] & 0x7fffffffu;
+    }
+}

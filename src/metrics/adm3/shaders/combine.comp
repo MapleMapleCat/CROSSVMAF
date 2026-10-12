@@ -1,0 +1,75 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Results {
+    uvec2 values[];
+} results;
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+layout(set = 0, binding = 1, std430) readonly buffer WaveSlots {
+    uvec2 entries[];
+} wave_slots;
+#endif
+
+layout(push_constant) uniform Parameters {
+    uint dlm_weight_low;
+    uint dlm_weight_high;
+    uint minimum_low;
+    uint minimum_high;
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+    uint result_task_stride_elements;
+#endif
+} parameters;
+
+void main() {
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+    const uint task_slot = wave_slots.entries[gl_WorkGroupID.z].x;
+    const uint task_frame_base =
+        task_slot * parameters.result_task_stride_elements;
+#else
+    const uint task_frame_base = 0u;
+#endif
+    uvec2 denominator = uvec2(0u);
+    uvec2 numerator = uvec2(0u);
+    uvec2 aim = uvec2(0u);
+    for (uint scale = 0u; scale < 4u; ++scale) {
+        const uint base = scale * 3u;
+        denominator = cv_q32_add_saturating(
+            denominator, results.values[task_frame_base + base + 0u]);
+        numerator = cv_q32_add_saturating(
+            numerator, results.values[task_frame_base + base + 1u]);
+        aim = cv_q32_add_saturating(
+            aim, results.values[task_frame_base + base + 2u]);
+    }
+
+    if (cv_u64_is_zero(denominator)) {
+        results.values[task_frame_base + 12u] = uvec2(0u, 1u);
+        return;
+    }
+    uvec2 dlm_score;
+    uvec2 aim_score;
+    const bool dlm_success = cv_q32_divide_rne(
+        numerator, denominator, dlm_score);
+    const bool aim_success = cv_q32_divide_rne(
+        aim, denominator, aim_score);
+    if (!dlm_success || !aim_success) {
+        results.values[task_frame_base + 12u] = uvec2(0u);
+        return;
+    }
+
+    const uvec2 one = uvec2(0u, 1u);
+    const uvec2 dlm_weight =
+        uvec2(parameters.dlm_weight_low, parameters.dlm_weight_high);
+    const uvec2 dlm_component = cv_q32_multiply_rne(dlm_score, dlm_weight);
+    const uvec2 aim_component = cv_q32_multiply_rne(
+        cv_q32_subtract_saturating(one, aim_score),
+        cv_q32_subtract_saturating(one, dlm_weight));
+    const uvec2 combined = cv_q32_add_saturating(
+        dlm_component, aim_component);
+    const uvec2 minimum = uvec2(parameters.minimum_low, parameters.minimum_high);
+    results.values[task_frame_base + 12u] =
+        cv_i64_less(combined, minimum) ? minimum : combined;
+}

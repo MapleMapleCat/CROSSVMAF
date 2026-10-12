@@ -1,0 +1,28 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer TotalSad {
+    uvec2 value;
+} total_sad;
+layout(set = 0, binding = 1, std430) writeonly buffer ScoreRing {
+    uvec2 values[];
+} score_ring;
+
+layout(push_constant) uniform Parameters {
+    uvec2 denominator;
+    uvec2 maximum;
+    uint output_slot;
+} parameters;
+
+void main() {
+    uvec2 score = uvec2(0u);
+    const bool valid = cv_q32_divide_rne(total_sad.value,
+                                         parameters.denominator, score);
+    if (!valid) score = uvec2(0u);
+    if (cv_i64_less(parameters.maximum, score)) score = parameters.maximum;
+    score_ring.values[parameters.output_slot] = score;
+}

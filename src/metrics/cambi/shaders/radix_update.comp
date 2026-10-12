@@ -1,0 +1,144 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/integer.glsl"
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer RadixCounts {
+    uint values[];
+} radix_counts;
+layout(set = 0, binding = 1, std430) buffer SelectionState {
+    uint values[];
+} state;
+layout(set = 0, binding = 2, std430) buffer PoolPartials {
+    uvec4 values[];
+} pool_partials;
+
+layout(push_constant) uniform Parameters {
+    uint digit_shift;
+    uint partial_offsets[5];
+} parameters;
+
+const uint bins_per_thread = 8u;
+
+shared uint chunk_suffix_counts[32];
+shared uint remaining_rank;
+shared uint selected_chunk;
+shared uint selected_bin;
+shared uint selected_remaining_rank;
+shared uint selected_prefix;
+shared uvec2 partial_sums[32];
+shared uint partial_counts[32];
+
+void main() {
+    const uint local_index = gl_LocalInvocationIndex;
+    const uint scale = gl_WorkGroupID.x;
+    const uint state_offset = scale * 7u;
+    const uint count_offset = scale * 256u;
+    if (state.values[state_offset + 4u] <=
+        state.values[state_offset + 2u]) {
+        return;
+    }
+    if (local_index == 0u) {
+        remaining_rank = state.values[state_offset + 1u];
+        selected_chunk = 0u;
+        selected_bin = 0u;
+        selected_remaining_rank = 0u;
+        selected_prefix = state.values[state_offset];
+    }
+
+    uint local_counts[bins_per_thread];
+    uint chunk_count = 0u;
+    for (uint chunk_bin = 0u; chunk_bin < bins_per_thread; ++chunk_bin) {
+        const uint bin = local_index * bins_per_thread + chunk_bin;
+        const uint count = radix_counts.values[count_offset + bin];
+        local_counts[chunk_bin] = count;
+        chunk_count += count;
+        radix_counts.values[count_offset + bin] = 0u;
+    }
+    chunk_suffix_counts[local_index] = chunk_count;
+    barrier();
+
+    for (uint lane_offset = 1u; lane_offset < gl_WorkGroupSize.x;
+         lane_offset <<= 1u) {
+        const uint higher_chunk_count =
+            local_index + lane_offset < gl_WorkGroupSize.x
+            ? chunk_suffix_counts[local_index + lane_offset]
+            : 0u;
+        barrier();
+        chunk_suffix_counts[local_index] += higher_chunk_count;
+        barrier();
+    }
+
+    const uint higher_bin_count = local_index + 1u < gl_WorkGroupSize.x
+        ? chunk_suffix_counts[local_index + 1u]
+        : 0u;
+    if (remaining_rank > higher_bin_count &&
+        remaining_rank <= higher_bin_count + chunk_count) {
+        selected_chunk = local_index;
+        selected_remaining_rank = remaining_rank - higher_bin_count;
+    }
+    barrier();
+
+    if (local_index == selected_chunk) {
+        uint chunk_remaining_rank = selected_remaining_rank;
+        for (int signed_chunk_bin = int(bins_per_thread) - 1;
+             signed_chunk_bin >= 0; --signed_chunk_bin) {
+            const uint chunk_bin = uint(signed_chunk_bin);
+            const uint count = local_counts[chunk_bin];
+            if (count >= chunk_remaining_rank) {
+                selected_bin = local_index * bins_per_thread + chunk_bin;
+                selected_remaining_rank = chunk_remaining_rank;
+                break;
+            }
+            chunk_remaining_rank -= count;
+        }
+    }
+    barrier();
+
+    if (parameters.digit_shift == 0u) {
+        uvec2 partial_sum = uvec2(0u);
+        uint partial_count = 0u;
+        for (uint chunk_bin = 0u; chunk_bin < bins_per_thread;
+             ++chunk_bin) {
+            const uint bin = local_index * bins_per_thread + chunk_bin;
+            const uint count = local_counts[chunk_bin];
+            if (bin > selected_bin && count != 0u) {
+                const uint value = selected_prefix | bin;
+                partial_sum = cv_u64_add(
+                    partial_sum, cv_u32_multiply(value, count));
+                partial_count += count;
+            }
+        }
+        partial_sums[local_index] = partial_sum;
+        partial_counts[local_index] = partial_count;
+        barrier();
+        for (uint stride = 16u; stride > 0u; stride >>= 1u) {
+            if (local_index < stride) {
+                partial_sums[local_index] = cv_u64_add(
+                    partial_sums[local_index],
+                    partial_sums[local_index + stride]);
+                partial_counts[local_index] +=
+                    partial_counts[local_index + stride];
+            }
+            barrier();
+        }
+        if (local_index == 0u) {
+            const uint partial_index = parameters.partial_offsets[scale];
+            const uvec4 first_partial =
+                pool_partials.values[partial_index];
+            pool_partials.values[partial_index] = uvec4(
+                cv_u64_add(first_partial.xy, partial_sums[0]),
+                first_partial.z + partial_counts[0], 0u);
+        }
+    }
+
+    if (local_index == 0u) {
+        state.values[state_offset] |=
+            selected_bin << parameters.digit_shift;
+        state.values[state_offset + 1u] = selected_remaining_rank;
+        state.values[state_offset + 3u] |=
+            255u << parameters.digit_shift;
+    }
+}

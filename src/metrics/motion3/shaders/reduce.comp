@@ -1,0 +1,42 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputSums {
+    uvec2 values[];
+} input_sums;
+layout(set = 0, binding = 1, std430) writeonly buffer OutputSums {
+    uvec2 values[];
+} output_sums;
+
+layout(push_constant) uniform Parameters {
+    uint input_count;
+    uint dispatch_groups_x;
+} parameters;
+
+shared uvec2 shared_sums[256];
+
+void main() {
+    const uint group_index = gl_WorkGroupID.y * parameters.dispatch_groups_x +
+                             gl_WorkGroupID.x;
+    const uint input_index = group_index * gl_WorkGroupSize.x +
+                             gl_LocalInvocationIndex;
+    const uint local_index = gl_LocalInvocationIndex;
+    shared_sums[local_index] = input_index < parameters.input_count
+        ? input_sums.values[input_index]
+        : uvec2(0u);
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (local_index < stride) {
+            shared_sums[local_index] = cv_u64_add(
+                shared_sums[local_index], shared_sums[local_index + stride]);
+        }
+        barrier();
+    }
+    if (local_index == 0u) {
+        output_sums.values[group_index] = shared_sums[0];
+    }
+}

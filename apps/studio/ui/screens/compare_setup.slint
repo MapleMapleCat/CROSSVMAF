@@ -1,0 +1,286 @@
+// Comparison input selection. The results view lives in compare.slint.
+import { Theme } from "../theme.slint";
+import { VM } from "../models/app_state.slint";
+import { Chip, SBtn, LinkButton, IconButton } from "../components/controls.slint";
+import { Card, PageHeader, H3, Desc, StatusMark, ActionMessage } from "../components/display.slint";
+import { VideoInfo } from "../components/video_input.slint";
+import { ResultItem } from "../components/result_item.slint";
+
+// Numbered step marker of the set-up cards.
+component StepBadge inherits Rectangle {
+    in property <int> step;
+    width: 22px;
+    height: 22px;
+    border-radius: 11px;
+    background: Theme.accent-soft;
+    border-width: 1px;
+    border-color: Theme.accent-line;
+    Text {
+        text: root.step;
+        font-family: Theme.mono-font;
+        font-size: 11px;
+        font-weight: 700;
+        color: Theme.accent;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// ---------- step 1: reference and videos ----------
+export component CompareSetup inherits VerticalLayout {
+    property <int> row-count: VM.cmps-rows.length;
+    spacing: 0;
+
+    PageHeader {
+        title: VM.cmps-editing ? @tr("Edit the comparison") : @tr("Set up a comparison");
+        description: @tr("Choose one reference video and up to 4 encoded versions of it.");
+        if VM.cmps-can-cancel: SBtn { kind: 3; text: @tr("Cancel"); clicked => { VM.cmps-cancel(); } }
+    }
+    Rectangle { height: 24px; }
+    ActionMessage { shown: VM.action-message-visible; text: VM.action-message; kind: VM.action-message-kind; }
+
+    // Reference video and automatic model selection
+    Card {
+        height: reference-lay.preferred-height + 32px;
+        reference-lay := VerticalLayout {
+            x: 18px;
+            y: 16px;
+            width: parent.width - 36px;
+            height: parent.height - 32px;
+            spacing: 0;
+            HorizontalLayout {
+                spacing: 12px;
+                VerticalLayout { alignment: start; padding-top: 1px; StepBadge { step: 1; } }
+                VerticalLayout {
+                    spacing: 5px;
+                    min-width: 0px;
+                    H3 { text: @tr("Reference video"); height: 24px; vertical-alignment: center; }
+                    VideoInfo {
+                        selected: VM.cmps-reference-selected;
+                        name: VM.cmps-reference-name;
+                        details: VM.cmps-reference-details;
+                        details-color: VM.cmps-reference-kind == 2 ? Theme.poor : Theme.text3;
+                    }
+                }
+                if !VM.cmps-editing: VerticalLayout {
+                    alignment: start;
+                    SBtn {
+                        kind: VM.cmps-reference-selected ? 0 : 1;
+                        text: VM.cmps-reference-selected ? @tr("Change file") : @tr("Choose file");
+                        clicked => { VM.cmps-choose-reference(); }
+                    }
+                }
+            }
+            Rectangle { height: 14px; }
+            Rectangle { height: 1px; background: Theme.stroke; }
+            Rectangle { height: 12px; }
+            HorizontalLayout {
+                height: 36px;
+                spacing: 12px;
+                padding-left: 34px;
+                Text {
+                    text: @tr("The model is selected automatically from the reference resolution and frame rate.");
+                    horizontal-stretch: 1;
+                    font-size: 11px;
+                    color: Theme.text3;
+                    vertical-alignment: center;
+                    min-width: 0px;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+    Rectangle { height: 16px; }
+
+    // Videos to compare
+    Card {
+        height: videos-lay.preferred-height + 32px;
+        videos-lay := VerticalLayout {
+            x: 18px;
+            y: 16px;
+            width: parent.width - 36px;
+            height: parent.height - 32px;
+            spacing: 0;
+            HorizontalLayout {
+                height: 35px;
+                spacing: 12px;
+                VerticalLayout { alignment: center; StepBadge { step: 2; } }
+                H3 { text: @tr("Videos to compare"); vertical-alignment: center; }
+                VerticalLayout { alignment: center; Chip { text: "\{root.row-count} / 4"; } }
+                Rectangle { horizontal-stretch: 1; }
+                SBtn {
+                    kind: root.row-count < 2 && VM.cmps-reference-selected ? 1 : 0;
+                    text: @tr("Add videos…");
+                    enabled: root.row-count < 4;
+                    clicked => { VM.cmps-add-files(); }
+                }
+            }
+            Rectangle { height: 2px; }
+            VerticalLayout {
+                padding-left: 34px;
+                Desc {
+                    text: @tr("Add the encoded versions of the reference, for example other bitrates, codecs or settings. You can select several files at once.");
+                }
+            }
+            Rectangle { height: 12px; }
+            if root.row-count == 0: Rectangle {
+                height: 64px;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: Theme.stroke2;
+                background: Theme.bg1;
+                Text {
+                    text: @tr("No videos yet. Add at least two to compare them.");
+                    font-size: 12px;
+                    color: Theme.text2;
+                }
+            }
+            if root.row-count > 0: Rectangle { height: 1px; background: Theme.stroke; }
+            for row[i] in VM.cmps-rows: VerticalLayout {
+                spacing: 0;
+                Rectangle {
+                    height: 54px;
+                    background: setup-ta.has-hover ? Theme.row-hover : transparent;
+                    setup-ta := TouchArea { }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        padding-left: 4px;
+                        VerticalLayout { width: 22px; alignment: center; Image { source: @image-url("../icons/film.svg"); width: 18px; colorize: Theme.text3; } }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            min-width: 0px;
+                            Text { text: row.name; font-family: Theme.mono-font; font-size: 12px; font-weight: 500; color: Theme.text; min-width: 0px; overflow: elide; }
+                            Text { text: row.details; font-size: 11px; color: row.status-kind == 2 ? Theme.poor : Theme.text3; min-width: 0px; overflow: elide; }
+                        }
+                        HorizontalLayout {
+                            width: 136px;
+                            spacing: 7px;
+                            VerticalLayout { alignment: center; StatusMark { kind: row.status-kind == 2 ? 2 : row.status-kind == 0 ? 0 : 1; } }
+                            Text {
+                                text: row.status;
+                                font-size: 11.5px;
+                                color: row.status-kind == 2 ? Theme.poor : row.status-kind == 1 ? Theme.text : Theme.text2;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                        HorizontalLayout {
+                            width: 150px;
+                            alignment: end;
+                            spacing: 4px;
+                            if row.action != 0: VerticalLayout {
+                                alignment: center;
+                                LinkButton {
+                                    text: row.action == 1 ? @tr("Evaluate again") : @tr("Use saved result");
+                                    clicked => { VM.cmps-toggle-reuse(i); }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                IconButton {
+                                    icon: @image-url("../icons/x.svg");
+                                    label: @tr("Remove {} from the list", row.name);
+                                    clicked => { VM.cmps-remove-row(i); }
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.stroke; }
+            }
+
+            if VM.cmp-candidates.length > 0: VerticalLayout {
+                spacing: 0;
+                Rectangle { height: 20px; }
+                Text {
+                    text: @tr("Saved evaluations of {}", VM.cmps-reference-name);
+                    font-size: 12.5px;
+                    font-weight: 600;
+                    color: Theme.text;
+                    overflow: elide;
+                }
+                Rectangle { height: 4px; }
+                Text {
+                    text: @tr("Their results are reused without evaluating the video again.");
+                    font-size: 11px;
+                    color: Theme.text3;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 8px; }
+                for candidate[i] in VM.cmp-candidates: VerticalLayout {
+                    spacing: 0;
+                    Rectangle {
+                        height: 48px;
+                        background: cand-ta.has-hover ? Theme.row-hover : transparent;
+                        cand-ta := TouchArea { }
+                        ResultItem {
+                            name: candidate.name;
+                            details: candidate.details;
+                            score: "VMAF " + candidate.score;
+                            show-icon: false;
+                            spacing: 12px;
+                            padding-left: 38px;
+                            padding-right: 0px;
+                            text-spacing: 3px;
+                            name-font-size: 12px;
+                            name-font-weight: 400;
+                            details-color: Theme.text3;
+                            score-width: 90px;
+                            score-font-size: 11.5px;
+                            score-font-weight: 400;
+                            score-color: Theme.text2;
+                            score-alignment: right;
+                            HorizontalLayout {
+                                width: 150px;
+                                alignment: end;
+                                if candidate.available: VerticalLayout {
+                                    alignment: center;
+                                    SBtn {
+                                        text: @tr("Add");
+                                        enabled: root.row-count < 4;
+                                        clicked => { VM.cmps-add-saved(i); }
+                                    }
+                                }
+                                if !candidate.available: Text {
+                                    text: candidate.reason;
+                                    font-size: 11px;
+                                    color: Theme.text3;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: right;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                    Rectangle { height: 1px; background: Theme.stroke; }
+                }
+            }
+        }
+    }
+    Rectangle { height: 16px; }
+
+    // What starting does, and the button that does it
+    HorizontalLayout {
+        height: 44px;
+        spacing: 10px;
+        VerticalLayout { alignment: center; StatusMark { kind: VM.cmps-status-kind; } }
+        Text {
+            text: VM.cmps-status;
+            font-size: 12.5px;
+            color: VM.cmps-status-kind == 2 ? Theme.poor : VM.cmps-status-kind == 1 ? Theme.text : Theme.text2;
+            vertical-alignment: center;
+            min-width: 0px;
+            overflow: elide;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        SBtn {
+            kind: 1;
+            size: 2;
+            icon-play: true;
+            text: VM.cmps-start-label;
+            enabled: VM.cmps-ready;
+            clicked => { VM.cmps-start(); }
+        }
+    }
+}

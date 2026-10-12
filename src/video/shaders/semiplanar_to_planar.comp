@@ -1,0 +1,139 @@
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#if CROSSVMAF_P010
+layout(set = 0, binding = 0, r16ui) readonly uniform uimage2D reference_y;
+layout(set = 0, binding = 1, rg16ui) readonly uniform uimage2D reference_uv;
+layout(set = 0, binding = 2, r16ui) readonly uniform uimage2D distorted_y;
+layout(set = 0, binding = 3, rg16ui) readonly uniform uimage2D distorted_uv;
+#else
+layout(set = 0, binding = 0, r8ui) readonly uniform uimage2D reference_y;
+layout(set = 0, binding = 1, rg8ui) readonly uniform uimage2D reference_uv;
+layout(set = 0, binding = 2, r8ui) readonly uniform uimage2D distorted_y;
+layout(set = 0, binding = 3, rg8ui) readonly uniform uimage2D distorted_uv;
+#endif
+
+layout(set = 0, binding = 4, std430) writeonly buffer ReferenceY {
+    uint words[];
+} output_reference_y;
+layout(set = 0, binding = 5, std430) writeonly buffer ReferenceU {
+    uint words[];
+} output_reference_u;
+layout(set = 0, binding = 6, std430) writeonly buffer ReferenceV {
+    uint words[];
+} output_reference_v;
+layout(set = 0, binding = 7, std430) writeonly buffer DistortedY {
+    uint words[];
+} output_distorted_y;
+layout(set = 0, binding = 8, std430) writeonly buffer DistortedU {
+    uint words[];
+} output_distorted_u;
+layout(set = 0, binding = 9, std430) writeonly buffer DistortedV {
+    uint words[];
+} output_distorted_v;
+
+layout(push_constant) uniform Parameters {
+    uint luma_width;
+    uint luma_height;
+    uint luma_stride_words;
+    uint chroma_width;
+    uint chroma_height;
+    uint chroma_stride_words;
+    uint input_kind;
+} parameters;
+
+uint convert_component(uint component) {
+#if CROSSVMAF_P010
+    return component >> 6u;
+#else
+    return component;
+#endif
+}
+
+uint load_luma(uint side, uint column, uint row) {
+    if (side == 0u) {
+        return convert_component(imageLoad(
+            reference_y, ivec2(column, row)).r);
+    }
+    return convert_component(imageLoad(
+        distorted_y, ivec2(column, row)).r);
+}
+
+uvec2 load_chroma(uint side, uint column, uint row) {
+    const uvec2 sample_value = side == 0u
+        ? imageLoad(reference_uv, ivec2(column, row)).rg
+        : imageLoad(distorted_uv, ivec2(column, row)).rg;
+    return uvec2(
+        convert_component(sample_value.r),
+        convert_component(sample_value.g));
+}
+
+void store_luma_word(uint side, uint word_offset, uint value) {
+    if (side == 0u) {
+        output_reference_y.words[word_offset] = value;
+    } else {
+        output_distorted_y.words[word_offset] = value;
+    }
+}
+
+void store_chroma_words(
+    uint side, uint word_offset, uint u_value, uint v_value) {
+    if (side == 0u) {
+        output_reference_u.words[word_offset] = u_value;
+        output_reference_v.words[word_offset] = v_value;
+    } else {
+        output_distorted_u.words[word_offset] = u_value;
+        output_distorted_v.words[word_offset] = v_value;
+    }
+}
+
+void main() {
+    const uint side = gl_GlobalInvocationID.z;
+    if (side >= 2u) return;
+    const bool is_chroma = parameters.input_kind != 0u;
+    const uint width = !is_chroma
+        ? parameters.luma_width
+        : parameters.chroma_width;
+    const uint height = !is_chroma
+        ? parameters.luma_height
+        : parameters.chroma_height;
+    const uint stride_words = !is_chroma
+        ? parameters.luma_stride_words
+        : parameters.chroma_stride_words;
+    const uint word_column = gl_GlobalInvocationID.x;
+    const uint row = gl_GlobalInvocationID.y;
+
+#if CROSSVMAF_P010
+    const uint samples_per_word = 2u;
+#else
+    const uint samples_per_word = 4u;
+#endif
+    const uint first_column = word_column * samples_per_word;
+    if (row >= height || first_column >= width) return;
+
+    uint packed_first_word = 0u;
+    uint packed_second_word = 0u;
+    for (uint sample_offset = 0u;
+         sample_offset < samples_per_word; ++sample_offset) {
+        const uint column = first_column + sample_offset;
+        if (column >= width) break;
+        const uvec2 sample_value = is_chroma
+            ? load_chroma(side, column, row)
+            : uvec2(load_luma(side, column, row), 0u);
+#if CROSSVMAF_P010
+        packed_first_word |= sample_value.x << (sample_offset * 16u);
+        packed_second_word |= sample_value.y << (sample_offset * 16u);
+#else
+        packed_first_word |= sample_value.x << (sample_offset * 8u);
+        packed_second_word |= sample_value.y << (sample_offset * 8u);
+#endif
+    }
+    const uint word_offset = row * stride_words + word_column;
+    if (is_chroma) {
+        store_chroma_words(
+            side, word_offset, packed_first_word, packed_second_word);
+    } else {
+        store_luma_word(side, word_offset, packed_first_word);
+    }
+}

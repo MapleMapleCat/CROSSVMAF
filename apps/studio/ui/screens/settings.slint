@@ -1,0 +1,289 @@
+import { SpinBox, AboutSlint } from "std-widgets.slint";
+import { SoftwareVersion } from "@crossvmaf-version";
+import { Theme } from "../theme.slint";
+import { VM } from "../models/app_state.slint";
+import { SBtn, SSelect, Seg, SToggle } from "../components/controls.slint";
+import { H1 } from "../components/display.slint";
+
+component SettingTitle inherits Text { color: Theme.text; font-size: 18px; font-weight: 650; }
+component SettingCopy inherits Text { color: Theme.text2; font-size: 14px; wrap: word-wrap; min-width: 0px; }
+component SettingDivider inherits Rectangle { height: 1px; background: Theme.stroke; }
+
+component SettingTab inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> active;
+    callback selected();
+    height: 45px;
+    width: tab-lay.preferred-width;
+    horizontal-stretch: 0;
+    background: touch.has-hover ? Theme.row-hover : transparent;
+    animate background { duration: Theme.selection-transition; easing: ease-out; }
+    tab-lay := HorizontalLayout {
+        padding-left: 9px; padding-right: 16px; padding-bottom: 6px; spacing: 9px;
+        VerticalLayout {
+            width: 16px;
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: 16px;
+                height: 16px;
+                colorize: root.active ? Theme.accent : Theme.text2;
+                animate colorize { duration: Theme.selection-transition; easing: ease-out; }
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: 14px;
+            font-weight: Theme.selection-label-weight;
+            color: root.active ? Theme.accent : Theme.text2;
+            vertical-alignment: center;
+            animate color { duration: Theme.selection-transition; easing: ease-out; }
+        }
+    }
+    Rectangle {
+        y: parent.height - 3px;
+        height: 3px;
+        width: parent.width;
+        background: root.active ? Theme.accent : transparent;
+        animate background { duration: Theme.selection-transition; easing: ease-out; }
+    }
+    keyboard := FocusScope {
+        accessible-role: button; accessible-label: root.text;
+        key-pressed(event) => { if (event.text == " " || event.text == "\n") { root.selected(); return accept; } return reject; }
+    }
+    Rectangle { border-width: keyboard.has-focus ? 1px : 0px; border-color: Theme.accent; background: transparent; }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { keyboard.focus(); root.selected(); } }
+}
+
+component DecodeChoice inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    in property <bool> checked;
+    callback selected();
+    height: max(88px, choice-lay.preferred-height + 28px);
+    background: checked ? Theme.accent-soft : touch.has-hover ? Theme.bg3 : Theme.bg2;
+    border-radius: 7px; border-width: checked || keyboard.has-focus ? 1px : 0px; border-color: Theme.accent;
+    choice-lay := HorizontalLayout {
+        x: 22px; y: 14px; width: parent.width - 44px; height: parent.height - 28px; spacing: 24px;
+        VerticalLayout {
+            width: 20px; alignment: center;
+            Rectangle {
+                width: 20px; height: 20px; border-radius: 10px;
+                border-width: 1.5px; border-color: root.checked ? Theme.accent : Theme.text3;
+                Rectangle { x: 4px; y: 4px; width: 12px; height: 12px; border-radius: 6px; background: root.checked ? Theme.accent : transparent; }
+            }
+        }
+        VerticalLayout {
+            spacing: 6px; alignment: center;
+            Text { text: root.title; color: Theme.text; font-size: 16px; font-weight: 600; }
+            SettingCopy { text: root.description; }
+        }
+    }
+    keyboard := FocusScope {
+        accessible-role: button; accessible-label: root.checked ? @tr("{}, selected", root.title) : root.title;
+        key-pressed(event) => { if (event.text == " " || event.text == "\n") { root.selected(); return accept; } return reject; }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { keyboard.focus(); root.selected(); } }
+}
+
+export component SettingsScreen inherits Rectangle {
+    property <length> content-w: self.width;
+    property <bool> wide: content-w >= 1000px;
+    property <length> main-w: wide ? content-w * 0.68 : content-w;
+    height: lay.preferred-height;
+    lay := VerticalLayout {
+        spacing: 0;
+        H1 { text: @tr("Settings"); font-size: 28px; }
+        Rectangle { height: 7px; }
+        HorizontalLayout {
+            spacing: 16px;
+            SettingCopy { text: @tr("Manage compute and task defaults for this computer."); }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: VM.settings-status; color: VM.settings-save-error ? Theme.poor : Theme.text2; font-size: 13px; overflow: elide; max-width: 310px; }
+        }
+        Rectangle { height: 30px; }
+        HorizontalLayout {
+            spacing: 20px;
+            SettingTab { text: @tr("Compute"); icon: @image-url("../icons/monitor.svg"); active: VM.settings-tab == 0; selected => { VM.settings-tab = 0; } }
+            SettingTab { text: @tr("Evaluation"); icon: @image-url("../icons/nav-queue.svg"); active: VM.settings-tab == 1; selected => { VM.settings-tab = 1; } }
+            SettingTab { text: @tr("Reports"); icon: @image-url("../icons/nav-report.svg"); active: VM.settings-tab == 2; selected => { VM.settings-tab = 2; } }
+            SettingTab { text: @tr("Appearance"); icon: @image-url("../icons/palette.svg"); active: VM.settings-tab == 3; selected => { VM.settings-tab = 3; } }
+            SettingTab { text: @tr("Diagnostics"); icon: @image-url("../icons/activity.svg"); active: VM.settings-tab == 4; selected => { VM.settings-tab = 4; } }
+            SettingTab { text: @tr("About"); icon: @image-url("../icons/info.svg"); active: VM.settings-tab == 5; selected => { VM.settings-tab = 5; } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        SettingDivider {}
+        Rectangle { height: 29px; }
+        content := Rectangle {
+            height: max(main.preferred-height, root.wide ? aside.preferred-height : 0px);
+            main := VerticalLayout {
+                x: 0px; y: 0px; width: root.main-w; height: self.preferred-height; spacing: 0;
+                if VM.settings-tab == 0: VerticalLayout {
+                    spacing: 0;
+                    SettingTitle { text: @tr("Compute device"); }
+                    Rectangle { height: 20px; }
+                    HorizontalLayout {
+                        spacing: 14px;
+                        Text { text: @tr("VMAF compute device"); color: Theme.text2; font-size: 14px; vertical-alignment: center; }
+                        SSelect { label-font-size: 14px; height: 40px; options: VM.device-options; idx <=> VM.device-idx; selected => { VM.settings-device-changed(); } }
+                        SBtn { label-font-size: 14px; height: 40px; text: VM.self-test-busy ? @tr("Self-testing…") : @tr("Device self-test"); enabled: !VM.self-test-busy; clicked => { VM.run-self-test(); } }
+                    }
+                    Rectangle { height: 10px; }
+                    SettingCopy { text: @tr("Decoding uses the selected GPU by default; choose another decode device under advanced settings."); }
+                    Rectangle { height: 7px; }
+                    SettingCopy { text: VM.self-test-status; color: VM.self-test-kind == 3 ? Theme.poor : Theme.text2; }
+                    Rectangle { height: 36px; }
+                    SettingDivider {}
+                    Rectangle { height: 23px; }
+                    SettingTitle { text: @tr("Video decoding"); }
+                    Rectangle { height: 18px; }
+                    DecodeChoice { title: @tr("decode mode" => "Automatic (recommended)"); description: @tr("Chooses the decoder from the video format and device capabilities."); checked: VM.decode-idx == 0; selected => { VM.decode-idx = 0; VM.settings-changed(); } }
+                    Rectangle { height: 1px; }
+                    DecodeChoice { title: @tr("Hardware only"); description: @tr("If either video cannot be hardware-decoded, the task stops with an error."); checked: VM.decode-idx == 1; selected => { VM.decode-idx = 1; VM.settings-changed(); } }
+                    Rectangle { height: 1px; }
+                    DecodeChoice { title: @tr("Software decoding"); description: @tr("Decodes on the CPU; VMAF is still computed on the selected GPU."); checked: VM.decode-idx == 2; selected => { VM.decode-idx = 2; VM.settings-changed(); } }
+                    Rectangle { height: 10px; }
+                    Rectangle {
+                        height: 58px; background: advanced-touch.has-hover ? Theme.bg3 : Theme.bg2;
+                        border-radius: 7px; border-width: 1px; border-color: Theme.stroke2;
+                        HorizontalLayout {
+                            padding-left: 20px; padding-right: 20px; spacing: 12px;
+                            VerticalLayout { width: 16px; alignment: center; Image { source: VM.advanced-decode-open ? @image-url("../icons/chevron-down.svg") : @image-url("../icons/chevron-right.svg"); colorize: Theme.text2; width: 16px; height: 16px; } }
+                            Text { text: @tr("Advanced decoding settings"); color: Theme.text; font-size: 14px; vertical-alignment: center; }
+                            Rectangle { horizontal-stretch: 1; }
+                            Text { text: @tr("Threads: {} · Buffer per video: {}", VM.decoder-threads == 0 ? @tr("Automatic") : VM.decoder-threads, @tr("{n} frame" | "{n} frames" % VM.decode-buffer)); color: Theme.text2; font-size: 13px; vertical-alignment: center; }
+                        }
+                        advanced-keyboard := FocusScope {
+                            accessible-role: button; accessible-label: @tr("Advanced decoding settings");
+                            key-pressed(event) => { if (event.text == " " || event.text == "\n") { VM.advanced-decode-open = !VM.advanced-decode-open; return accept; } return reject; }
+                        }
+                        advanced-touch := TouchArea { mouse-cursor: pointer; clicked => { advanced-keyboard.focus(); VM.advanced-decode-open = !VM.advanced-decode-open; } }
+                    }
+                    if VM.advanced-decode-open: VerticalLayout {
+                    if VM.decode-idx != 2: VerticalLayout {
+                        spacing: 10px; padding-top: 12px; padding-bottom: 16px;
+                        HorizontalLayout {
+                            spacing: 14px;
+                            Text { text: @tr("Decode backend"); color: Theme.text2; font-size: 14px; vertical-alignment: center; }
+                            SSelect { height: 40px; options: VM.decode-backend-options; idx <=> VM.decode-backend-idx; selected => { VM.settings-changed(); } }
+                        }
+                        SettingCopy { text: @tr("With a specific backend, the task fails if that backend is unavailable."); }
+                        SettingCopy { text: VM.decode-device-status; }
+                    }
+
+                        if VM.decode-idx != 2: VerticalLayout {
+                            spacing: 10px;
+                            Text { text: @tr("Decode device"); color: Theme.text2; font-size: 14px; }
+                            SSelect { height: 40px; options: VM.decode-device-options; idx <=> VM.decode-device-idx; selected(index) => { VM.decode-device-changed(index); } }
+                            SettingCopy { text: @tr("Decoding on another GPU passes frames through system memory; the device's stable ID is saved."); }
+                            SSelect { height: 40px; options: [@tr("Automatic transfer"), @tr("GPU-only transfer"), @tr("Via system memory")]; idx <=> VM.decode-transfer-idx; selected => { VM.settings-changed(); } }
+                        }
+                        spacing: 14px; padding-top: 20px; padding-bottom: 8px;
+                        HorizontalLayout {
+                            spacing: 20px;
+                            VerticalLayout { spacing: 5px; Text { text: @tr("Decoder threads (per video)"); font-size: 14px; color: Theme.text; } SettingCopy { text: @tr("0 assigns threads automatically; a manual value applies to each video separately."); } }
+                            SpinBox { height: 40px; width: 130px; accessible-label: @tr("Decoder threads"); minimum: 0; maximum: 64; value <=> VM.decoder-threads; edited => { VM.settings-changed(); } }
+                        }
+                        HorizontalLayout {
+                            spacing: 20px;
+                            VerticalLayout { spacing: 5px; Text { text: @tr("Decoded frame buffer (per video)"); font-size: 14px; color: Theme.text; } SettingCopy { text: @tr("Default 4 frames. A larger buffer uses more system or GPU memory."); } }
+                            SpinBox { height: 40px; width: 130px; accessible-label: @tr("Decoded frame buffer"); minimum: 1; maximum: 64; value <=> VM.decode-buffer; edited => { VM.settings-changed(); } }
+                        }
+                    }
+                }
+                if VM.settings-tab == 1: VerticalLayout {
+                    spacing: 18px;
+                    SettingTitle { text: @tr("Automatic model selection"); }
+                    SettingCopy { text: @tr("The reference video determines the model: 4K uses 1.5H; smaller resolutions use the 1080p 3H baseline. Constant frame rates of 50 fps or higher use HFR models."); }
+                    SettingCopy { text: @tr("Unknown or variable frame rates use the standard model. Videos are evaluated at their original resolution without resizing."); }
+                    Rectangle { height: 8px; }
+                    SettingDivider {}
+                    SettingTitle { text: @tr("Task queue"); }
+                    Text { text: @tr("When a task fails"); color: Theme.text; font-size: 14px; }
+                    Seg { label-font-size: 14px; height: 40px; options: [@tr("Pause queue"), @tr("Continue with next task")]; idx <=> VM.queue-failure-idx; selected => { VM.settings-changed(); } }
+                    SettingCopy { text: @tr("Pausing lets you inspect the failed task first; continuing runs the next one. This applies immediately to later failures in the queue."); }
+                }
+                if VM.settings-tab == 2: VerticalLayout {
+                    spacing: 18px;
+                    SettingTitle { text: @tr("Reports and export"); }
+                    Text { text: @tr("Default export format"); color: Theme.text; font-size: 14px; }
+                    Seg { label-font-size: 14px; height: 40px; options: ["JSON", "CSV"]; idx <=> VM.export-idx; selected => { VM.settings-changed(); } }
+                    SettingCopy { text: @tr("JSON keeps the full evaluation configuration and per-frame data; CSV suits spreadsheet analysis."); }
+                    Rectangle { height: 8px; }
+                    SettingDivider {}
+                    SettingTitle { text: @tr("Local report library"); }
+                    SettingCopy { text: @tr("Reports are saved after each evaluation and reopen without reading the source videos again."); }
+                    Text { text: @tr("Location"); color: Theme.text; font-size: 14px; }
+                    SettingCopy { text: VM.reports-directory; font-family: Theme.mono-font; overflow: elide; }
+                    SBtn { label-font-size: 14px; height: 40px; text: @tr("Open report folder"); clicked => { VM.open-reports-directory(); } }
+                }
+                if VM.settings-tab == 3: VerticalLayout {
+                    spacing: 18px;
+                    SettingTitle { text: @tr("Appearance"); }
+                    Text { text: @tr("Theme"); color: Theme.text; font-size: 14px; }
+                    Seg { label-font-size: 14px; height: 40px; options: [@tr("Dark"), @tr("Light")]; idx <=> VM.theme-idx; selected => { VM.settings-changed(); } }
+                    SettingCopy { text: @tr("The theme applies to every page immediately."); }
+                    SettingDivider {}
+                    Text { text: @tr("Interface language"); color: Theme.text; font-size: 14px; }
+                    // Options come from C++: "Follow system (…)" and one endonym per catalog.
+                    Seg { label-font-size: 14px; height: 40px; options: VM.lang-options; idx <=> VM.lang-idx; selected => { VM.language-changed(); } }
+                    SettingCopy { text: @tr("Text switches immediately. New PDF reports use this language; JSON, CSV and diagnostics keep stable field names."); }
+                }
+                if VM.settings-tab == 4: VerticalLayout {
+                    spacing: 18px;
+                    SettingTitle { text: @tr("Device diagnostics"); }
+                    SettingCopy { text: @tr("Runs a self-test of the VMAF integer pipeline on the selected GPU; no video is needed. Passing does not mean every video format can be hardware-decoded."); }
+                    SettingCopy { text: VM.self-test-status; color: VM.self-test-kind == 3 ? Theme.poor : Theme.text; }
+                    SBtn { label-font-size: 14px; height: 40px; text: VM.self-test-busy ? @tr("Self-testing…") : @tr("Run device self-test"); enabled: !VM.self-test-busy; clicked => { VM.run-self-test(); } }
+                    SettingDivider {}
+                    SettingTitle { text: @tr("Task diagnostics"); }
+                    SettingCopy { text: @tr("Open the task to inspect in the task queue; exported support information keeps the error, compute device and actual run configuration."); }
+                    SBtn { label-font-size: 14px; height: 40px; text: @tr("Go to task queue"); clicked => { VM.nav-to(1); } }
+                }
+                if VM.settings-tab == 5: VerticalLayout {
+                    spacing: 18px;
+                    SettingTitle { text: @tr("About"); }
+                    SettingCopy { text: @tr("CrossVMAF Studio {} · runs entirely on this computer", SoftwareVersion.value); }
+                    Rectangle {
+                        height: 120px; background: Theme.bg2;
+                        border-radius: 7px; border-width: 1px; border-color: Theme.stroke2;
+                        HorizontalLayout {
+                            alignment: center;
+                            // Slint Royalty-free license disclosure; logo follows Palette.color-scheme.
+                            AboutSlint { width: 300px; }
+                        }
+                    }
+                }
+            }
+            aside := VerticalLayout {
+                y: 0px; height: self.preferred-height;
+                x: root.main-w + 54px;
+                width: root.wide ? root.content-w - root.main-w - 54px : 0px;
+                spacing: 22px;
+                if root.wide: VerticalLayout {
+                    spacing: 15px;
+                    SettingTitle { text: VM.settings-tab == 0 ? @tr("About decoding") : VM.settings-tab == 5 ? @tr("About") : @tr("About these settings"); }
+                    SettingCopy { text: VM.settings-tab == 0 ? @tr("In automatic mode, HEVC, AV1 and VP9 are hardware-decoded when supported; H.264 and other formats use software decoding.")
+                        : VM.settings-tab == 1 ? @tr("Model selection is automatic. Reports always record the model actually used.")
+                        : VM.settings-tab == 2 ? @tr("Reports stay on this computer. Exports only write to the location you choose.")
+                        : VM.settings-tab == 3 ? @tr("Dark and light themes share the same layout and controls.")
+                        : VM.settings-tab == 4 ? @tr("The self-test checks the compute pipeline; hardware decoding also depends on codec, bit depth and driver support.")
+                        : @tr("The interface is built with Slint. Version and component information is shown here."); }
+                    if VM.settings-tab == 0: SettingCopy { text: @tr("After a task starts, its details show the decoder actually used."); }
+                    Rectangle { height: 10px; }
+                    SettingDivider {}
+                    Rectangle { height: 4px; }
+                    SettingTitle { text: @tr("Scope"); }
+                    SettingCopy { text: VM.settings-tab == 0 || VM.settings-tab == 1 ? @tr("Compute, decoding and evaluation defaults apply to newly queued tasks. Queued tasks keep their configuration.")
+                        : VM.settings-tab == 3 ? @tr("Appearance and language changes take effect immediately and are saved automatically.")
+                        : VM.settings-tab == 2 || VM.settings-tab == 4 ? @tr("Settings are saved automatically on this computer. Videos are never uploaded.")
+                        : @tr("This page only shows information; nothing needs saving."); }
+                }
+            }
+            if root.wide: Rectangle { x: root.main-w + 27px; width: 1px; height: parent.height; background: Theme.stroke; }
+        }
+        Rectangle { height: 38px; }
+        SettingCopy { text: root.wide ? @tr("Processed locally · videos are never uploaded") : @tr("Compute and decoding settings apply to newly queued tasks · videos are never uploaded"); horizontal-alignment: center; }
+    }
+}

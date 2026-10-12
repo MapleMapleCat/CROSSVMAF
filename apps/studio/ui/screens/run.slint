@@ -1,0 +1,487 @@
+// Task queue / running evaluation screen.
+import { Theme } from "../theme.slint";
+import { VM } from "../models/app_state.slint";
+import { Chip, SBtn, PBar } from "../components/controls.slint";
+import { Card, PageHeader, H3 } from "../components/display.slint";
+import { LineChart, HeatStrip, LegendLine } from "../components/charts.slint";
+
+// Hero stat cell: label above the value, left aligned.
+component RunStat inherits VerticalLayout {
+    in property <string> value;
+    in property <string> label;
+    spacing: 4px;
+    alignment: start;
+    Text {
+        text: label;
+        font-size: 10.5px;
+        letter-spacing: 0.84px;
+        color: Theme.text3;
+    }
+    Text {
+        text: value;
+        font-size: 22px;
+        font-weight: 300;
+        letter-spacing: -0.5px;
+        color: Theme.text;
+        overflow: elide;
+    }
+}
+
+// Ring-shaped progress indicator for the hero card. The track is a full
+// circle drawn as two half arcs so it shares the arc's stroke semantics and
+// aligns with it exactly; the progress arc grows with `frac` from 12 o'clock,
+// clockwise, over a wide translucent halo of the same tone that reads as a
+// soft glow. A tinted disc inside the ring anchors the percentage text.
+// `done` swaps the arc for a fully tinted track and full-circle halo,
+// `error` paints everything poor.
+component ProgressRing inherits Rectangle {
+    in property <float> frac: 0;
+    in property <string> value;
+    in property <string> caption;
+    in property <bool> done: false;
+    in property <bool> error: false;
+    width: 116px;
+    height: 116px;
+    property <color> tone: error ? Theme.poor : done ? Theme.excellent : Theme.accent;
+    // Stroke centerline radius 50: the 7px ring and 10px halo stay inside
+    // the 116 viewbox, including their round end caps.
+    property <float> ring-r: 50;
+    // A full-circle ArcTo degenerates; the completed state uses the track.
+    property <float> arc-frac: clamp(frac, 0, 0.999);
+    property <angle> arc-angle: 360deg * arc-frac;
+    // Arc tip on the stroke centerline. Both visible arcs use round caps.
+    property <float> tip-x: 58 + ring-r * sin(arc-angle);
+    property <float> tip-y: 58 - ring-r * cos(arc-angle);
+    // Soft tinted disc anchoring the value text inside the ring.
+    Rectangle {
+        x: 13px;
+        y: 13px;
+        width: 90px;
+        height: 90px;
+        border-radius: 45px;
+        background: root.tone.with-alpha(0.07);
+    }
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 116;
+        viewbox-height: 116;
+        fill: transparent;
+        stroke: root.error ? Theme.poor-line : root.done ? root.tone : Theme.stroke2;
+        stroke-width: 7px;
+        MoveTo { x: 58; y: 8; }
+        ArcTo { x: 58; y: 108; radius-x: 50; radius-y: 50; sweep: true; }
+        ArcTo { x: 58; y: 8; radius-x: 50; radius-y: 50; sweep: true; }
+    }
+    // Halo: the same arc again with a wide translucent stroke.
+    if !root.done && root.frac > 0: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 116;
+        viewbox-height: 116;
+        fill: transparent;
+        stroke: root.tone.with-alpha(0.16);
+        stroke-width: 10px;
+        stroke-line-cap: round;
+        MoveTo { x: 58; y: 8; }
+        ArcTo {
+            x: root.tip-x;
+            y: root.tip-y;
+            radius-x: 50;
+            radius-y: 50;
+            large-arc: root.arc-frac > 0.5;
+            sweep: true;
+        }
+    }
+    if root.done: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 116;
+        viewbox-height: 116;
+        fill: transparent;
+        stroke: root.tone.with-alpha(0.16);
+        stroke-width: 10px;
+        MoveTo { x: 58; y: 8; }
+        ArcTo { x: 58; y: 108; radius-x: 50; radius-y: 50; sweep: true; }
+        ArcTo { x: 58; y: 8; radius-x: 50; radius-y: 50; sweep: true; }
+    }
+    if !root.done && root.frac > 0: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 116;
+        viewbox-height: 116;
+        fill: transparent;
+        stroke: root.tone;
+        stroke-width: 7px;
+        stroke-line-cap: round;
+        MoveTo { x: 58; y: 8; }
+        ArcTo {
+            x: root.tip-x;
+            y: root.tip-y;
+            radius-x: 50;
+            radius-y: 50;
+            large-arc: root.arc-frac > 0.5;
+            sweep: true;
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        spacing: 2px;
+        Text {
+            text: root.value;
+            font-size: 21px;
+            font-weight: 300;
+            letter-spacing: -0.5px;
+            color: root.tone;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.caption;
+            font-size: 10px;
+            letter-spacing: 0.8px;
+            color: Theme.text3;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+// VM-bound ring so the horizontal and stacked hero layouts share one binding.
+component HeroRing inherits ProgressRing {
+    value: VM.run-pct;
+    caption: @tr("Progress");
+    frac: VM.run-frac;
+    done: VM.run-done;
+    error: VM.run-status-kind == 2;
+}
+
+// 2×2 stat cells of the hero card. The fourth cell flips from the ETA to the
+// final running mean once the run is done.
+component StatGrid inherits GridLayout {
+    spacing-horizontal: 38px;
+    spacing-vertical: 14px;
+    Row {
+        RunStat { label: @tr("Frames done"); value: VM.run-frames; }
+        RunStat { label: @tr("Throughput"); value: VM.run-speed; }
+    }
+    Row {
+        RunStat { label: @tr("Elapsed"); value: VM.run-elapsed; }
+        RunStat {
+            label: VM.run-done ? @tr("Running mean") : @tr("Remaining");
+            value: VM.run-done ? VM.live-mean : VM.run-eta;
+        }
+    }
+}
+
+// Backend/complete chips plus the run status line of the hero card.
+component StatusRow inherits HorizontalLayout {
+    spacing: 10px;
+    alignment: start;
+    if VM.run-backend != "": Chip { kind: 4; text: VM.run-backend; }
+    if VM.run-done: Chip { kind: 0; text: @tr("Complete"); }
+    if VM.run-status != "": Text {
+        text: VM.run-status;
+        font-size: 11.5px;
+        wrap: word-wrap;
+        color: VM.run-status-kind == 2 ? Theme.poor : Theme.text2;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+    }
+}
+
+// Empty-queue onboarding: takes the zero-filled stats card's place until
+// something can be measured. Owns the "what happens here" copy and the
+// primary way forward, so the page never shows dead numbers.
+component EmptyHero inherits Card {
+    height: 380px;
+    VerticalLayout {
+        x: 24px;
+        y: 0px;
+        width: parent.width - 48px;
+        height: parent.height;
+        alignment: center;
+        spacing: 0;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 58px;
+                height: 58px;
+                border-radius: 15px;
+                background: Theme.accent-soft;
+                border-width: 1px;
+                border-color: Theme.accent-line;
+                Image {
+                    source: @image-url("../icons/nav-queue.svg");
+                    width: 27px;
+                    height: 27px;
+                    colorize: Theme.accent;
+                }
+            }
+        }
+        Rectangle { height: 22px; }
+        Text {
+            text: @tr("No tasks yet");
+            font-size: 17px;
+            font-weight: 600;
+            color: Theme.text;
+            horizontal-alignment: center;
+        }
+        Rectangle { height: 9px; }
+        HorizontalLayout {
+            alignment: center;
+            Text {
+                text: @tr("Start a new evaluation or queue several video pairs to run back to back — live progress, per-frame scores and throughput appear here.");
+                font-size: 12.5px;
+                color: Theme.text2;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                width: 470px;
+            }
+        }
+        Rectangle { height: 26px; }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 12px;
+            SBtn {
+                kind: 1;
+                size: 2;
+                icon-play: true;
+                text: @tr("New evaluation");
+                clicked => { VM.nav-to(0); }
+            }
+            if VM.report-available: SBtn {
+                size: 2;
+                text: @tr("View last report");
+                clicked => { VM.nav-to(2); }
+            }
+        }
+        Rectangle { height: 30px; }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 30px;
+            for hint in [
+                { icon: @image-url("../icons/activity.svg"), label: @tr("Live per-frame scores") },
+                { icon: @image-url("../icons/nav-queue.svg"), label: @tr("Batch queue runs back to back") },
+                { icon: @image-url("../icons/monitor.svg"), label: @tr("Runs locally · no uploads") },
+            ]: HorizontalLayout {
+                spacing: 8px;
+                Image { source: hint.icon; width: 14px; height: 14px; colorize: Theme.text3; }
+                Text { text: hint.label; font-size: 11.5px; color: Theme.text3; vertical-alignment: center; }
+            }
+        }
+    }
+}
+
+export component RunScreen inherits Rectangle {
+    property <length> content-w: self.width;
+    // Nothing has run in this session yet: no live task, no result, no status
+    // line. The zero-filled stats card means nothing then — the EmptyHero
+    // takes its place, and once the queue has items the queue card alone
+    // carries the page.
+    property <bool> show-stats: VM.run-active || VM.run-done || VM.run-status != "";
+    property <bool> empty: !root.show-stats && VM.queue-items.length == 0;
+    height: lay.preferred-height;
+
+    lay := VerticalLayout {
+        width: 100%;
+        spacing: 0;
+
+    PageHeader {
+        title: VM.run-title;
+        description: VM.run-description;
+        mono: true;
+        // The empty hero already offers the report shortcut when one exists.
+        if !root.empty: SBtn { kind: 3; text: @tr("View last report"); enabled: VM.report-available; clicked => { VM.nav-to(2); } }
+        if VM.run-status-kind == 2: SBtn { text: @tr("Export task diagnostics"); clicked => { VM.export-run-diagnostics(); } }
+        if VM.run-active || VM.run-stopping: SBtn {
+            kind: 2;
+            text: VM.run-stopping ? @tr("Stopping") : @tr("Cancel task");
+            enabled: VM.run-active && !VM.run-stopping;
+            clicked => { VM.cancel-run(); }
+        }
+    }
+    Rectangle { height: 24px; }
+
+    if root.empty: EmptyHero { }
+
+    // Hero card: progress ring, 2×2 stats, chips and the status line in one
+    // surface, with the gradient progress bar along the bottom.
+    if root.show-stats: Card {
+        height: card-lay.preferred-height + 36px;
+        // Below this width the ring stacks above the stats instead of
+        // squeezing them past readability.
+        property <bool> stacked: card-lay.width < 640px;
+        property <brush> bar-fill: VM.run-status-kind == 2 ? Theme.poor
+            : VM.run-done ? @linear-gradient(90deg, Theme.band-excellent, Theme.excellent)
+            : @linear-gradient(90deg, Theme.accent-strong, Theme.accent);
+        card-lay := VerticalLayout {
+            x: 18px;
+            y: 18px;
+            width: parent.width - 36px;
+            height: parent.height - 36px;
+            spacing: 18px;
+            if !stacked: HorizontalLayout {
+                spacing: 28px;
+                VerticalLayout {
+                    alignment: center;
+                    HeroRing { }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 16px;
+                    StatGrid { }
+                    StatusRow { }
+                }
+            }
+            if stacked: VerticalLayout {
+                spacing: 18px;
+                HorizontalLayout {
+                    alignment: center;
+                    HeroRing { }
+                }
+                StatGrid { }
+                StatusRow { }
+            }
+            PBar { frac: VM.run-frac; fill: bar-fill; }
+        }
+    }
+    if root.show-stats: Rectangle { height: 16px; }
+
+    if VM.run-active || VM.run-done: Card {
+        height: live-lay.preferred-height + 32px;
+        live-lay := VerticalLayout {
+            x: 18px;
+            y: 16px;
+            width: parent.width - 36px;
+            height: parent.height - 32px;
+            spacing: 8px;
+            HorizontalLayout {
+                height: 22px;
+                H3 { text: @tr("Live per-frame VMAF"); vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                HorizontalLayout {
+                    spacing: 16px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { text: @tr("Current frame"); font-size: 11.5px; color: Theme.text2; vertical-alignment: center; }
+                        Text { text: VM.live-cur; font-family: Theme.mono-font; font-size: 14px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { text: @tr("Running mean"); font-size: 11.5px; color: Theme.text2; vertical-alignment: center; }
+                        Text { text: VM.live-mean; font-family: Theme.mono-font; font-size: 14px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        VerticalLayout { alignment: center; LegendLine { } }
+                        Text { text: @tr("93 visually lossless"); font-size: 11.5px; color: Theme.text2; vertical-alignment: center; }
+                    }
+                }
+            }
+            LineChart {
+                chart-w: parent.width;
+                vbh: 220;
+                zones: VM.live-zones;
+                grid: VM.live-grid;
+                vgrid: VM.live-vgrid;
+                ylabels: VM.live-ylabels;
+                xlabels: VM.live-xlabels;
+                guides: VM.live-guides;
+                series: [{ path: VM.live-path, use-accent: true, width: 1.6, visible: true, opacity: 1 }];
+                live-dot-visible: VM.live-dot-visible;
+                live-dot-x: VM.live-dot-x;
+                live-dot-y: VM.live-dot-y;
+                pulse: pulse-phase;
+            }
+            HeatStrip {
+                chart-w: parent.width;
+                cells: VM.live-strip;
+                progress-frac: VM.live-strip-frac;
+                frame-w: VM.live-strip-frame-w;
+            }
+        }
+    }
+    if VM.run-active || VM.run-done: Rectangle { height: 16px; }
+
+    if VM.queue-items.length > 0: Card {
+        height: queue-lay.preferred-height + 32px;
+        queue-lay := VerticalLayout {
+            x: 18px;
+            y: 16px;
+            width: parent.width - 36px;
+            height: parent.height - 32px;
+            spacing: 3px;
+            HorizontalLayout {
+                height: 30px;
+                H3 { text: @tr("Task queue ({n} item)" | "Task queue ({n} items)" % VM.queue-items.length); vertical-alignment: center; }
+                Rectangle { horizontal-stretch: 1; }
+                SBtn {
+                    size: 1;
+                    text: VM.queue-active ? @tr("Pause queue") : @tr("Start queue");
+                    enabled: VM.queue-items.length > 0;
+                    clicked => { VM.queue-active ? VM.queue-pause() : VM.queue-start(); }
+                }
+            }
+            VerticalLayout {
+                spacing: 0;
+                for item[i] in VM.queue-items: VerticalLayout {
+                    spacing: 0;
+                    Rectangle {
+                        height: 44px;
+                        border-radius: 6px;
+                        background: row-ta.has-hover ? Theme.row-hover : transparent;
+                        animate background { duration: 120ms; }
+                        // Declared before the content so the per-row action
+                        // links keep receiving their own clicks.
+                        row-ta := TouchArea { }
+                        HorizontalLayout {
+                            x: 6px;
+                            width: parent.width - 12px;
+                            height: 100%;
+                            spacing: 13px;
+                            Chip { kind: item.status-kind == 1 ? 0 : item.status-kind == 2 ? 3 : 4; text: item.status; }
+                            Text {
+                                text: item.pair;
+                                font-family: Theme.mono-font;
+                                font-size: 12.5px;
+                                color: Theme.text2;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                            if item.in-comparison: Text {
+                                text: @tr("Comparison →");
+                                font-size: 11.5px;
+                                color: Theme.accent;
+                                vertical-alignment: center;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { VM.nav-to(3); }
+                                }
+                            }
+                            if item.action-kind != 0: Text {
+                                text: item.action-kind == 1 ? @tr("Cancel") : item.action-kind == 2 ? @tr("Remove") : @tr("Retry");
+                                font-size: 11.5px;
+                                color: Theme.accent;
+                                vertical-alignment: center;
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { VM.queue-action(i); }
+                                }
+                            }
+                        }
+                    }
+                    if i + 1 < VM.queue-items.length: Rectangle { height: 1px; background: Theme.stroke; }
+                }
+            }
+        }
+    }
+    }
+
+    property <float> pulse-phase: 0;
+    Timer {
+        interval: 33ms;
+        running: VM.screen == 1 && VM.live-dot-visible;
+        triggered => { pulse-phase = mod(pulse-phase + 0.033 / 1.6, 1); }
+    }
+}

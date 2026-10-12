@@ -1,0 +1,19 @@
+add_library(crossvmaf_motion3_reference STATIC
+    reference.cpp
+)
+crossvmaf_use_project_headers(crossvmaf_motion3_reference)
+crossvmaf_configure_target(crossvmaf_motion3_reference)
+target_link_libraries(crossvmaf_motion3_reference PUBLIC crossvmaf_numeric crossvmaf_frame)
+
+add_library(crossvmaf_motion3_vulkan STATIC
+    vulkan.cpp
+)
+crossvmaf_use_project_headers(crossvmaf_motion3_vulkan)
+crossvmaf_configure_target(crossvmaf_motion3_vulkan)
+target_link_libraries(crossvmaf_motion3_vulkan PUBLIC crossvmaf_gpu crossvmaf_numeric crossvmaf_frame volk::volk)
+target_compile_definitions(crossvmaf_motion3_vulkan PRIVATE VK_NO_PROTOTYPES)
+
+crossvmaf_compile_shader(crossvmaf_motion3_vulkan src/metrics/motion3/shaders/filter_sad.comp motion3_filter_sad_spv)
+crossvmaf_compile_shader(crossvmaf_motion3_vulkan src/metrics/motion3/shaders/reduce.comp motion3_reduce_spv)
+crossvmaf_compile_shader(crossvmaf_motion3_vulkan src/metrics/motion3/shaders/finalize.comp motion3_finalize_spv)
+crossvmaf_compile_shader(crossvmaf_motion3_vulkan src/metrics/motion3/shaders/temporal.comp motion3_temporal_spv)

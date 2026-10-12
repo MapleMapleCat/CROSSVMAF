@@ -1,0 +1,174 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "glsl/transcendentals.glsl"
+
+layout(local_size_x = 16, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Results {
+    uvec2 values[];
+} results;
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+layout(set = 0, binding = 1, std430) readonly buffer WaveSlots {
+    uvec2 entries[];
+} wave_slots;
+#endif
+
+layout(push_constant) uniform Parameters {
+    uint widths[4];
+    uint heights[4];
+    uint horizontal_factors_raw[4];
+    uint diagonal_factors_raw[4];
+    uint noise_weight_low;
+    uint noise_weight_high;
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+    uint result_task_stride_elements;
+#endif
+} parameters;
+
+shared uvec2 finalize_roots[10];
+
+uint ceil_log2_u32(uint value) {
+    return value <= 1u ? 0u : uint(findMSB(value - 1u) + 1);
+}
+
+uint border_start(uint size) {
+    return size < 5u ? 0u : (size - 5u) / 10u;
+}
+
+int floor_divide_three(int value) {
+    return value >= 0 ? value / 3 : -((-value + 2) / 3);
+}
+
+uvec2 scale_power_of_two(uvec2 value, int exponent) {
+    if (cv_u64_is_zero(value)) return value;
+    if (exponent >= 0) {
+        if (exponent >= 31) return uvec2(0xffffffffu, 0x7fffffffu);
+        const uvec2 shifted = cv_u64_shift_left(value, uint(exponent));
+        const uvec2 limit = uvec2(0xffffffffu, 0x7fffffffu);
+        return cv_u64_less(limit, shifted) ? limit : shifted;
+    }
+    return cv_u64_shift_right_rne(value, uint(-(exponent + 1)) + 1u);
+}
+
+uvec2 cuberoot_scaled_u64(uvec2 accumulator, int binary_shift) {
+    if (cv_u64_is_zero(accumulator)) return uvec2(0u);
+    const int msb = cv_u64_msb(accumulator);
+    const int root_exponent = floor_divide_three(msb - binary_shift);
+    const int normalization_shift =
+        32 - binary_shift - 3 * root_exponent;
+    const uvec2 normalized = normalization_shift >= 0
+        ? cv_u64_shift_left(accumulator, uint(normalization_shift))
+        : cv_u64_shift_right_rne(accumulator, uint(-normalization_shift));
+    uvec2 root;
+    const bool success = cv_q32_cbrt(normalized, root);
+    return success ? scale_power_of_two(root, root_exponent) : uvec2(0u);
+}
+
+uvec2 factor_for_band(uint scale, uint band) {
+    return uvec2(
+        band == 2u ? parameters.diagonal_factors_raw[scale]
+                   : parameters.horizontal_factors_raw[scale],
+        0u);
+}
+
+uvec2 reduced(uint scale, uint channel, uint task_frame_base) {
+    return results.values[
+        task_frame_base + 13u + scale * 24u + channel];
+}
+
+void main() {
+    const uint scale = gl_WorkGroupID.x;
+    const uint local_index = gl_LocalInvocationIndex;
+#if defined(CROSSVMAF_ADM3_STREAMING_WAVE)
+    const uint task_slot = wave_slots.entries[gl_WorkGroupID.z].x;
+    const uint task_frame_base =
+        task_slot * parameters.result_task_stride_elements;
+#else
+    const uint task_frame_base = 0u;
+#endif
+    const uint width = parameters.widths[scale];
+    const uint height = parameters.heights[scale];
+    const uint left = border_start(width);
+    const uint top = border_start(height);
+    const uint region_width = width - 2u * left;
+    const uint region_height = height - 2u * top;
+    const uint pixel_count = region_width * region_height;
+
+    int denominator_shift;
+    int numerator_shift[3];
+    if (scale == 0u) {
+        const int area_shift = int(ceil_log2_u32(pixel_count)) - 20;
+        denominator_shift = 18 - max(area_shift, 0);
+        const int horizontal_width_shift =
+            int(ceil_log2_u32(width)) - 4;
+        const int diagonal_width_shift =
+            int(ceil_log2_u32(width)) - 3;
+        const int height_shift = int(ceil_log2_u32(height));
+        numerator_shift[0] = 52 - horizontal_width_shift - height_shift;
+        numerator_shift[1] = numerator_shift[0];
+        numerator_shift[2] = 57 - diagonal_width_shift - height_shift;
+    } else {
+        const int denominator_base[3] = int[3](32, 27, 23);
+        const int numerator_base[3] = int[3](45, 39, 36);
+        denominator_shift = denominator_base[scale - 1u] -
+            int(ceil_log2_u32(region_width)) -
+            int(ceil_log2_u32(region_height));
+        const int common_numerator_shift = numerator_base[scale - 1u] -
+            int(ceil_log2_u32(width)) - int(ceil_log2_u32(height));
+        numerator_shift[0] = common_numerator_shift;
+        numerator_shift[1] = common_numerator_shift;
+        numerator_shift[2] = common_numerator_shift;
+    }
+
+    const uvec2 noise_weight =
+        uvec2(parameters.noise_weight_low, parameters.noise_weight_high);
+    if (local_index < 10u) {
+        uvec2 root_value = uvec2(0u);
+        if (local_index == 0u) {
+            const uvec2 pixel_count_q32 = uvec2(0u, pixel_count);
+            const bool noise_success = cv_q32_cbrt(
+                cv_q32_multiply_rne(pixel_count_q32, noise_weight),
+                root_value);
+            if (!noise_success) root_value = uvec2(0u);
+        } else {
+            const uint root_index = local_index - 1u;
+            const uint root_group = root_index / 3u;
+            const uint band = root_index % 3u;
+            const uint channel = root_group * 3u + band;
+            const int binary_shift = root_group == 0u
+                ? denominator_shift
+                : numerator_shift[band];
+            root_value = cuberoot_scaled_u64(
+                reduced(scale, channel, task_frame_base), binary_shift);
+            if (root_group == 0u) {
+                root_value = cv_q32_multiply_rne(
+                    root_value, factor_for_band(scale, band));
+            }
+        }
+        finalize_roots[local_index] = root_value;
+    }
+
+    barrier();
+    if (local_index != 0u) return;
+
+    uvec2 denominator = uvec2(0u);
+    uvec2 numerator = uvec2(0u);
+    uvec2 aim = uvec2(0u);
+    for (uint band = 0u; band < 3u; ++band) {
+        denominator = cv_q32_add_saturating(
+            denominator,
+            cv_q32_add_saturating(
+                finalize_roots[1u + band], finalize_roots[0u]));
+        numerator = cv_q32_add_saturating(
+            numerator,
+            cv_q32_add_saturating(
+                finalize_roots[4u + band], finalize_roots[0u]));
+        aim = cv_q32_add_saturating(aim, finalize_roots[7u + band]);
+    }
+
+    const uint output_index = task_frame_base + scale * 3u;
+    results.values[output_index + 0u] = denominator;
+    results.values[output_index + 1u] = numerator;
+    results.values[output_index + 2u] = aim;
+}

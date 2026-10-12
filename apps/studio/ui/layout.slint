@@ -1,0 +1,35 @@
+// All dimensions are logical pixels. Slint applies the window's DPI scale once.
+export global Layout {
+    out property <length> window-min-width: 960px;
+    out property <length> window-min-height: 540px;
+    out property <length> page-min-width: 934px;
+    out property <length> sidebar-width: 216px;
+    out property <length> page-max-width: 1240px;
+    out property <length> settings-max-width: 1360px;
+    out property <length> page-padding: 34px;
+    out property <length> page-top: 30px;
+    out property <length> page-bottom: 60px;
+    out property <length> workbench-top: 20px;
+    out property <length> workbench-bottom: 24px;
+    out property <length> compact-content-width: 1000px;
+}
+
+// Every screen receives the same available width, margins and transition.
+// The workbench keeps its denser top inset; scrolling belongs to the app shell.
+export component PageHost inherits Rectangle {
+    in property <bool> active;
+    in property <length> viewport-width;
+    in property <bool> workbench: false;
+    x: Layout.page-padding;
+    width: viewport-width - 2 * Layout.page-padding;
+    height: content.preferred-height;
+    y: (workbench ? Layout.workbench-top : Layout.page-top) + (active ? 0px : 5px);
+    visible: active || self.opacity > 0;
+    opacity: active ? 1 : 0;
+    animate opacity { duration: 180ms; }
+    animate y { duration: 180ms; easing: ease-out; }
+    content := VerticalLayout {
+        spacing: 0;
+        @children
+    }
+}
