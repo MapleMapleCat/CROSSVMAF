@@ -124,9 +124,11 @@ target_link_libraries(crossvmaf_studio PRIVATE
     nlohmann_json::nlohmann_json
     Slint::Slint
 )
-# Embed the catalogs into the generated UI code. @tr strings carry no implicit
-# component context, so one msgid is translated once for all components.
+# Embed UI assets so distributed builds do not load icons or fonts from the
+# build machine's source paths. Also bundle catalogs: @tr strings carry no
+# implicit component context, so one msgid is translated once for all components.
 set_target_properties(crossvmaf_studio PROPERTIES
+    SLINT_EMBED_RESOURCES "embed-files"
     SLINT_BUNDLE_TRANSLATIONS "${CROSSVMAF_STUDIO_I18N_DIR}"
     SLINT_NO_DEFAULT_TRANSLATION_CONTEXT ON)
 slint_target_sources(crossvmaf_studio ui/app.slint
