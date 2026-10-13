@@ -347,6 +347,22 @@ Result<std::vector<DeviceCandidate>> Runtime::enumerate_candidates() const {
 
 namespace crossvmaf::gpu {
 
+bool has_full_host_visible_vram(
+    const VkPhysicalDeviceMemoryProperties &memory_properties) noexcept {
+    VkDeviceSize max_vram = 0U;
+    VkDeviceSize max_visible_vram = 0U;
+    for (std::uint32_t index = 0U; index < memory_properties.memoryTypeCount; ++index) {
+        const auto &type = memory_properties.memoryTypes[index];
+        if ((type.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0U) continue;
+        const auto size = memory_properties.memoryHeaps[type.heapIndex].size;
+        max_vram = std::max(max_vram, size);
+        if ((type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0U)
+            max_visible_vram = std::max(max_visible_vram, size);
+    }
+    // Use the same 1 KiB tolerance as FFmpeg, but reject missing memory data.
+    return max_vram != 0U && max_visible_vram != 0U && max_vram - max_visible_vram < 1024U;
+}
+
 std::optional<VideoQueuePlan>
 plan_video_queues(std::uint32_t compute_queue_family, std::uint32_t available_compute_queues,
                   std::span<const NativeQueueFamily> video_queue_families,
@@ -770,14 +786,17 @@ device_query_vulkan_video_configuration(const DeviceCandidate &candidate,
         vp9_codec_enabled ? supported_video_decode_vp9_features.videoDecodeVP9 : VK_FALSE;
 #endif
     if (!enabled_codecs.empty()) configuration.extension_names.push_back(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
-    // FFmpeg 9.0.1's Vulkan frame preparation skips the initial layout
-    // transition when host image copy is unavailable. Enable the supported
-    // public feature, as FFmpeg does for its own devices, so a shared device
-    // uses the same frame initialization path. Pixel data remains on the GPU.
+    // Match FFmpeg's own device creation: host image copy can restrict frame
+    // allocations to the small host-visible VRAM window when ReBAR is disabled.
+    // Check our shared device here because importing it bypasses FFmpeg's check.
     if (host_image_copy_available && supported_host_image_copy_features.hostImageCopy == VK_TRUE) {
-        configuration.extension_names.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
-        configuration.host_image_copy_features = supported_host_image_copy_features;
-        configuration.host_image_copy_features.pNext = nullptr;
+        VkPhysicalDeviceMemoryProperties memory_properties{};
+        vkGetPhysicalDeviceMemoryProperties(candidate.physical_device, &memory_properties);
+        if (has_full_host_visible_vram(memory_properties)) {
+            configuration.extension_names.push_back(VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
+            configuration.host_image_copy_features = supported_host_image_copy_features;
+            configuration.host_image_copy_features.pNext = nullptr;
+        }
     }
     if (!enabled_codecs.empty()) configuration.extension_names.push_back(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
     if (requirements.frame_interop) {

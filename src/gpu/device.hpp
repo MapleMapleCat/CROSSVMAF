@@ -153,6 +153,11 @@ namespace crossvmaf::gpu {
 
 struct NativeQueueFamily;
 
+// Match FFmpeg's ReBAR heuristic for host image copies. UMA devices with fully
+// host-visible device-local memory qualify without a PCIe BAR.
+[[nodiscard]] bool has_full_host_visible_vram(
+    const VkPhysicalDeviceMemoryProperties &memory_properties) noexcept;
+
 struct VideoQueuePlan final {
     std::uint32_t runtime_queue_count{};
     VkDeviceQueueCreateFlags queue_create_flags{};
