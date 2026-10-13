@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 
 project(
     CrossVMAF
-    VERSION 0.1.1
+    VERSION 0.1.2
     DESCRIPTION "Deterministic cross-vendor VMAF 1.0.16 execution engine"
     LANGUAGES C CXX
 )
