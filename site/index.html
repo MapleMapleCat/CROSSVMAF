@@ -1,11 +1,422 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CrossVMAF</title>
-  </head>
-  <body>
-    <h1>CrossVMAF</h1>
-  </body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CrossVMAF — Video quality, measured on the GPU</title>
+  <meta name="description" content="Vulkan-accelerated VMAF video quality assessment for Windows and Linux — an independent C++20 implementation of the VMAF 1.0.16 pipeline, with a desktop studio, CLI, and streaming C++ API.">
+  <meta property="og:title" content="CrossVMAF — Video quality, measured on the GPU">
+  <meta property="og:description" content="Vulkan-accelerated VMAF video quality assessment for Windows and Linux.">
+  <meta property="og:type" content="website">
+  <meta name="theme-color" content="#16171A">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script>document.documentElement.className += " js";</script>
+</head>
+<body>
+
+  <div class="bg-fx" aria-hidden="true"><div class="bg-grid"></div><div class="bg-glow"></div><div class="bg-noise"></div></div>
+
+  <header class="nav" id="nav">
+    <div class="nav-inner">
+      <a class="brand" href="#top" aria-label="CrossVMAF home">
+        <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <rect x="1" y="1" width="30" height="30" rx="7" class="mark-frame"/>
+          <path d="M6 20 L10 20 L12.5 11 L16 24 L19 14 L21 18 L26 18" class="mark-pulse" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="26" cy="18" r="2.2" class="mark-dot"/>
+        </svg>
+        <span class="brand-name">CrossVMAF</span>
+        <span class="brand-ver mono">v0.1.2</span>
+      </a>
+      <nav class="nav-links" aria-label="Sections">
+        <a href="#features" data-i18n="nav.features">Features</a>
+        <a href="#pipeline" data-i18n="nav.pipeline">Pipeline</a>
+        <a href="#studio" data-i18n="nav.studio">Studio</a>
+        <a href="#cli" data-i18n="nav.cli">CLI</a>
+        <a href="#api" data-i18n="nav.api">API</a>
+      </nav>
+      <div class="nav-right">
+        <div class="lang mono" role="group" aria-label="Language">
+          <button type="button" data-lang="en">EN</button>
+          <button type="button" data-lang="zh">中文</button>
+        </div>
+        <a class="icon-link" href="https://github.com/MapleMapleCat/CROSSVMAF" target="_blank" rel="noopener" aria-label="GitHub repository">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55 0-.27-.01-1.17-.02-2.12-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.76 2.69 1.25 3.35.96.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.12 3.05.74.81 1.18 1.83 1.18 3.09 0 4.41-2.69 5.38-5.25 5.67.41.35.77 1.05.77 2.12 0 1.53-.01 2.76-.01 3.14 0 .3.2.67.8.55A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z"/></svg>
+        </a>
+        <a class="btn btn-primary btn-sm nav-cta" href="https://github.com/MapleMapleCat/CROSSVMAF/releases" target="_blank" rel="noopener" data-i18n="nav.download">Download</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+
+    <!-- ============ HERO ============ -->
+    <section class="hero">
+      <div class="hero-left">
+        <p class="kicker mono reveal" data-i18n="hero.kicker">v0.1.2 · early development · open source</p>
+        <h1 class="display reveal" style="--d:.08s" data-i18n="hero.title">Video quality, measured on the GPU.</h1>
+        <p class="lede reveal" style="--d:.16s" data-i18n="hero.sub">CrossVMAF is Vulkan-accelerated VMAF assessment for Windows and Linux — an independent C++20 implementation of the VMAF 1.0.16 feature and model pipeline, with a desktop studio, a CLI, and a streaming C++ API.</p>
+        <div class="cta-row reveal" style="--d:.24s">
+          <a class="btn btn-primary magnetic" href="https://github.com/MapleMapleCat/CROSSVMAF/releases" target="_blank" rel="noopener">
+            <span data-i18n="cta.download">Download for Windows</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/MapleMapleCat/CROSSVMAF" target="_blank" rel="noopener">
+            <span>GitHub</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg>
+          </a>
+        </div>
+        <p class="hero-note mono reveal" style="--d:.32s">VULKAN 1.1+ GPU · WINDOWS X64 · LINUX X86-64</p>
+      </div>
+
+      <div class="hero-right reveal" style="--d:.2s">
+        <div class="scope-card">
+          <div class="scope-head mono">
+            <span data-i18n="scope.title">PER-FRAME VMAF · MEAN POOLING</span>
+            <span class="sim-badge" data-i18n="scope.sim">SIMULATED</span>
+          </div>
+          <div class="scope-wrap"><canvas id="scope"></canvas></div>
+          <div class="scope-readouts mono">
+            <div class="ro"><span class="ro-label" data-i18n="scope.score">SCORE</span><span class="ro-val" id="r-score">—</span></div>
+            <div class="ro"><span class="ro-label" data-i18n="scope.frames">FRAMES</span><span class="ro-val" id="r-frames">0</span></div>
+            <div class="ro"><span class="ro-label" data-i18n="scope.band">BAND</span><span class="ro-val" id="r-band">—</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ STATS ============ -->
+    <section class="stats reveal-group" aria-label="Key numbers">
+      <div class="stat reveal"><span class="stat-num mono" data-count="8">0</span><span class="stat-label mono" data-i18n="stats.models">BUNDLED MODELS</span></div>
+      <div class="stat reveal" style="--d:.08s"><span class="stat-num mono" data-count="5">0</span><span class="stat-label mono" data-i18n="stats.backends">DECODE BACKENDS</span></div>
+      <div class="stat reveal" style="--d:.16s"><span class="stat-num mono" data-count="2">0</span><span class="stat-label mono" data-i18n="stats.platforms">PLATFORMS</span></div>
+      <div class="stat reveal" style="--d:.24s"><span class="stat-num mono" data-count="11">0</span><span class="stat-label mono" data-i18n="stats.codecs">CODECS</span></div>
+    </section>
+
+    <!-- ============ WHAT ============ -->
+    <section id="what" class="section">
+      <div class="sec-head reveal">
+        <p class="sec-kicker mono"><span class="sec-num">01</span><span data-i18n="what.kicker">OVERVIEW</span></p>
+        <h2 class="sec-title" data-i18n="what.title">Two videos in. One score out.</h2>
+        <p class="sec-lede" data-i18n="what.lede">CrossVMAF compares a reference video with a distorted video. Feature evaluation runs on a Vulkan GPU; final model prediction runs on the CPU. Every frame is scored, and pooling condenses the sequence into a single 0–100 result.</p>
+      </div>
+      <div class="steps">
+        <article class="step reveal">
+          <div class="step-files mono"><span>ref.mp4</span><span class="step-plus">×</span><span>dist.mp4</span></div>
+          <h3 data-i18n="what.s1t">Reference + distorted</h3>
+          <p data-i18n="what.s1d">Two inputs with matching decoded dimensions, pixel format, bit depth, and frame count. No resizing, no color conversion — compared exactly as decoded.</p>
+        </article>
+        <div class="step-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h16m-6-6 6 6-6 6"/></svg></div>
+        <article class="step reveal" style="--d:.1s">
+          <div class="step-files mono"><span>frame n</span><span class="step-plus">↔</span><span>frame n</span></div>
+          <h3 data-i18n="what.s2t">Frames paired, features on GPU</h3>
+          <p data-i18n="what.s2d">Decoded frames pair in display order with timestamp checks. The VMAF 1.0.16 feature set is extracted in Vulkan compute on any vendor's GPU.</p>
+        </article>
+        <div class="step-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h16m-6-6 6 6-6 6"/></svg></div>
+        <article class="step reveal" style="--d:.2s">
+          <div class="step-files mono"><span class="step-score">0–100</span></div>
+          <h3 data-i18n="what.s3t">A pooled 0–100 score</h3>
+          <p data-i18n="what.s3d">Per-frame scores pool by mean, min, or harmonic mean. Export JSON or CSV from the CLI — or an A4 PDF report from Studio.</p>
+        </article>
+      </div>
+      <div class="band-legend reveal mono" aria-label="Quality bands">
+        <span class="legend-title" data-i18n="what.legend">QUALITY BANDS</span>
+        <span class="legend-item"><i class="dot d-exc"></i><span data-i18n="band.excellent">EXCELLENT</span> ≥93</span>
+        <span class="legend-item"><i class="dot d-good"></i><span data-i18n="band.good">GOOD</span> ≥80</span>
+        <span class="legend-item"><i class="dot d-fair"></i><span data-i18n="band.fair">FAIR</span> ≥60</span>
+        <span class="legend-item"><i class="dot d-poor"></i><span data-i18n="band.poor">POOR</span> &lt;60</span>
+      </div>
+    </section>
+
+    <!-- ============ FEATURES ============ -->
+    <section id="features" class="section">
+      <div class="sec-head reveal">
+        <p class="sec-kicker mono"><span class="sec-num">02</span><span data-i18n="feat.kicker">HIGHLIGHTS</span></p>
+        <h2 class="sec-title" data-i18n="feat.title">Built like an instrument.</h2>
+      </div>
+      <div class="card-grid">
+        <article class="card reveal">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></div>
+          <h3 data-i18n="feat.c1t">Vulkan compute</h3>
+          <p data-i18n="feat.c1d">Feature evaluation runs on any Vulkan 1.1+ GPU — Intel, NVIDIA, AMD, or others. Cross-vendor by design, not by port.</p>
+        </article>
+        <article class="card reveal" style="--d:.07s">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg></div>
+          <h3 data-i18n="feat.c2t">Five decode paths</h3>
+          <p data-i18n="feat.c2d">QSV, NVDEC, AMF, Vulkan Video, and VA-API — picked automatically per GPU vendor, with a software fallback always behind them.</p>
+        </article>
+        <article class="card reveal" style="--d:.14s">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
+          <h3 data-i18n="feat.c3t">Automatic model selection</h3>
+          <p data-i18n="feat.c3d">Eight bundled VMAF 1.0.16 models chosen from the reference's decoded dimensions and frame rate — 4K, 1080p, and HFR variants, with CLI overrides.</p>
+        </article>
+        <article class="card reveal" style="--d:.21s">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-3.6 8-10V5l-8-3-8 3v7c0 6.4 8 10 8 10Z"/><path d="m9 11.5 2 2 4-4.5"/></svg></div>
+          <h3 data-i18n="feat.c4t">CPU verification</h3>
+          <p data-i18n="feat.c4d"><code>--verify-cpu</code> decodes again and runs an independent CPU reference pass, comparing it against the Vulkan results frame by frame.</p>
+        </article>
+        <article class="card reveal" style="--d:.28s">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6V4H6l6 8-6 8h12v-2"/></svg></div>
+          <h3 data-i18n="feat.c5t">Pooling your way</h3>
+          <p data-i18n="feat.c5d">Mean by default. Min and harmonic mean when the worst frames matter more than the average ones.</p>
+        </article>
+        <article class="card reveal" style="--d:.35s">
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M9 17v-3M12 17v-6M15 17v-1.5"/></svg></div>
+          <h3 data-i18n="feat.c6t">Reports &amp; exports</h3>
+          <p data-i18n="feat.c6d">JSON and CSV from the CLI. Studio adds A4 customer PDF reports — pooled score, quality curve, distribution, review segments — with fonts embedded.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ============ PIPELINE ============ -->
+    <section id="pipeline" class="section">
+      <div class="sec-head reveal">
+        <p class="sec-kicker mono"><span class="sec-num">03</span><span data-i18n="pipe.kicker">PIPELINE</span></p>
+        <h2 class="sec-title" data-i18n="pipe.title">GPU where it pays, CPU where it counts.</h2>
+      </div>
+      <div class="pipe reveal">
+        <div class="pipe-node" tabindex="0">
+          <div class="pipe-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg></div>
+          <p class="pipe-name mono" data-i18n="pipe.n1">DECODE</p>
+          <p class="pipe-sub" data-i18n="pipe.n1s">auto backend</p>
+          <div class="pipe-tip" role="tooltip"><span data-i18n="pipe.n1tip">Per GPU vendor: Intel QSV · NVIDIA NVDEC · AMD AMF (Windows) / VA-API (Linux) → Vulkan Video → software.</span></div>
+        </div>
+        <div class="pipe-link" aria-hidden="true"></div>
+        <div class="pipe-node" tabindex="0">
+          <div class="pipe-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></div>
+          <p class="pipe-name mono" data-i18n="pipe.n2">FEATURES</p>
+          <p class="pipe-sub" data-i18n="pipe.n2s">vulkan compute</p>
+          <div class="pipe-tip" role="tooltip"><span data-i18n="pipe.n2tip">The VMAF 1.0.16 feature set is evaluated in compute shaders on the selected Vulkan device.</span></div>
+        </div>
+        <div class="pipe-link" aria-hidden="true"></div>
+        <div class="pipe-node" tabindex="0">
+          <div class="pipe-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
+          <p class="pipe-name mono" data-i18n="pipe.n3">TEMPORAL</p>
+          <p class="pipe-sub" data-i18n="pipe.n3s">across frames</p>
+          <div class="pipe-tip" role="tooltip"><span data-i18n="pipe.n3tip">Motion and temporal features aggregate across frames on the GPU.</span></div>
+        </div>
+        <div class="pipe-link" aria-hidden="true"></div>
+        <div class="pipe-node" tabindex="0">
+          <div class="pipe-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
+          <p class="pipe-name mono" data-i18n="pipe.n4">MODEL</p>
+          <p class="pipe-sub" data-i18n="pipe.n4s">svm on cpu</p>
+          <div class="pipe-tip" role="tooltip"><span data-i18n="pipe.n4tip">The bundled model matched to your input predicts per-frame scores on the CPU.</span></div>
+        </div>
+        <div class="pipe-link" aria-hidden="true"></div>
+        <div class="pipe-node" tabindex="0">
+          <div class="pipe-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg></div>
+          <p class="pipe-name mono" data-i18n="pipe.n5">SCORE</p>
+          <p class="pipe-sub" data-i18n="pipe.n5s">mean · min · harmonic</p>
+          <div class="pipe-tip" role="tooltip"><span data-i18n="pipe.n5tip">Pooling condenses the sequence into a single 0–100 score, recorded in every report.</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ STUDIO ============ -->
+    <section id="studio" class="section">
+      <div class="sec-head reveal">
+        <p class="sec-kicker mono"><span class="sec-num">04</span><span data-i18n="studio.kicker">STUDIO</span></p>
+        <h2 class="sec-title" data-i18n="studio.title">A desktop lab for your queue.</h2>
+        <p class="sec-lede" data-i18n="studio.lede">Studio wraps the engine in a desktop workflow: select inputs, queue evaluations, compare saved runs, and review reports — in English or 简体中文, light or dark.</p>
+      </div>
+      <div class="studio-split">
+        <ul class="studio-points">
+          <li class="reveal"><h3 data-i18n="studio.p1t">Queue with confidence</h3><p data-i18n="studio.p1d">Settings are captured the moment a task is enqueued; the queue pauses on failure by default instead of burning through the batch.</p></li>
+          <li class="reveal" style="--d:.08s"><h3 data-i18n="studio.p2t">Compare runs</h3><p data-i18n="studio.p2d">Overlay quality curves from saved evaluations in four color-blind-safe series colors.</p></li>
+          <li class="reveal" style="--d:.16s"><h3 data-i18n="studio.p3t">Reports that travel</h3><p data-i18n="studio.p3d">Export JSON or CSV for analysis, or generate an A4 customer PDF — pooled score, curve, distribution, review segments — with fonts embedded. No browser or printer driver needed.</p></li>
+        </ul>
+        <div class="studio-mock reveal" style="--d:.1s" aria-hidden="true">
+          <div class="win">
+            <div class="win-bar">
+              <span class="win-title mono">CrossVMAF Studio</span>
+              <span class="win-btns">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14"/></svg>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m6 6 12 12M18 6 6 18"/></svg>
+              </span>
+            </div>
+            <div class="win-body">
+              <div class="queue">
+                <div class="q-item">
+                  <p class="q-name mono">ep01_ref × ep01_crf24</p>
+                  <p class="q-meta"><span class="chip chip-done" data-i18n="chip.done">DONE</span><span class="q-score mono q-exc">96.4</span></p>
+                </div>
+                <div class="q-item">
+                  <p class="q-name mono">ep02_ref × ep02_crf30</p>
+                  <p class="q-meta"><span class="chip chip-run" data-i18n="chip.run">RUNNING</span></p>
+                  <div class="q-bar"><div class="q-bar-fill"></div></div>
+                </div>
+                <div class="q-item q-idle">
+                  <p class="q-name mono">ep03_ref × ep03_crf36</p>
+                  <p class="q-meta"><span class="chip chip-queue" data-i18n="chip.queue">QUEUED</span></p>
+                </div>
+              </div>
+              <div class="chart">
+                <div class="chart-head">
+                  <span class="chart-title mono" data-i18n="studio.chart">QUALITY CURVE</span>
+                  <span class="chart-badge mono">96.4 · <b data-i18n="band.excellent">EXCELLENT</b></span>
+                </div>
+                <svg class="chart-svg" viewBox="0 0 400 180" preserveAspectRatio="none">
+                  <rect class="z-exc" x="0" y="0"   width="400" height="18"/>
+                  <rect class="z-good" x="0" y="18" width="400" height="54"/>
+                  <rect class="z-fair" x="0" y="72" width="400" height="72"/>
+                  <rect class="z-poor" x="0" y="144" width="400" height="36"/>
+                  <g class="grid">
+                    <line x1="0" y1="18"  x2="400" y2="18"/>
+                    <line x1="0" y1="72"  x2="400" y2="72"/>
+                    <line x1="0" y1="144" x2="400" y2="144"/>
+                    <line x1="0" y1="179" x2="400" y2="179"/>
+                  </g>
+                  <polyline class="series-2" points="0,42 25,38 50,46 75,40 100,55 125,62 150,58 175,70 200,64 225,52 250,48 275,54 300,44 325,50 350,40 375,44 400,38"/>
+                  <polyline class="series-1" id="chart-line" points="0,30 25,26 50,32 75,24 100,34 125,88 150,96 175,90 200,36 225,28 250,32 275,26 300,34 325,28 350,24 375,30 400,26"/>
+                </svg>
+                <div class="chart-legend mono">
+                  <span><i class="dot d-s1"></i>ep01</span>
+                  <span><i class="dot d-s2"></i>ep02</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ CLI ============ -->
+    <section id="cli" class="section">
+      <div class="sec-head reveal">
+        <p class="sec-kicker mono"><span class="sec-num">05</span><span data-i18n="cli.kicker">CLI</span></p>
+        <h2 class="sec-title" data-i18n="cli.title">Scriptable to the last flag.</h2>
+      </div>
+      <div class="term reveal">
+        <div class="term-bar">
+          <span class="term-dots"><i></i><i></i><i></i></span>
+          <span class="term-title mono">pwsh — crossvmaf</span>
+          <span class="term-sim mono" data-i18n="cli.sim">ILLUSTRATIVE OUTPUT</span>
+        </div>
+        <pre class="term-body mono" id="term" aria-live="polite"></pre>
+      </div>
+      <div class="opt-grid">
+        <div class="opt reveal"><code>--reference PATH</code><span data-i18n="cli.o1">Reference video · required</span></div>
+        <div class="opt reveal" style="--d:.05s"><code>--distorted PATH</code><span data-i18n="cli.o2">Distorted video · required</span></div>
+        <div class="opt reveal" style="--d:.1s"><code>--model NAME</code><span data-i18n="cli.o3">Force a bundled model · default auto</span></div>
+        <div class="opt reveal" style="--d:.15s"><code>--device auto|UUID</code><span data-i18n="cli.o4">Vulkan compute device</span></div>
+        <div class="opt reveal" style="--d:.2s"><code>--pool mean|min|harmonic</code><span data-i18n="cli.o5">Sequence pooling · default mean</span></div>
+        <div class="opt reveal" style="--d:.25s"><code>--format json|csv</code><span data-i18n="cli.o6">Output format · default json</span></div>
+        <div class="opt reveal" style="--d:.3s"><code>--verify-cpu</code><span data-i18n="cli.o7">Independent CPU verification pass</span></div>
+        <div class="opt reveal" style="--d:.35s"><code>--decode-backend NAME</code><span data-i18n="cli.o8">Pin vulkan · qsv · nvdec · vaapi · amf</span></div>
+      </div>
+    </section>
+
+    <!-- ============ API ============ -->
+    <section id="api" class="section">
+      <div class="sec-head reveal">
+        <p class="sec-kicker mono"><span class="sec-num">06</span><span data-i18n="api.kicker">C++ API</span></p>
+        <h2 class="sec-title" data-i18n="api.title">Stream results as frames land.</h2>
+        <p class="sec-lede" data-i18n="api.lede">Embed CrossVMAF in your own pipeline. Open an EvaluationStream on the two paths; next() returns ordered batches, and finish() drains the remaining GPU and temporal results.</p>
+      </div>
+      <div class="api-split">
+        <div class="api-points reveal">
+          <div class="api-point"><h3 data-i18n="api.p1">Ordered batches</h3><p data-i18n="api.p1d">Results arrive in display order as the GPU pipeline produces them — no waiting for the whole sequence.</p></div>
+          <div class="api-point"><h3 data-i18n="api.p2">Full control</h3><p data-i18n="api.p2d">Cancellation, metadata, frame-count hints, and execution statistics through the public streaming API.</p></div>
+        </div>
+        <div class="code reveal" style="--d:.1s">
+          <div class="code-bar">
+            <span class="code-file mono">stream.cpp</span>
+            <button type="button" class="copy mono" id="copy-btn"><span data-i18n="api.copy">COPY</span></button>
+          </div>
+          <pre class="code-body mono" id="code"><code><span class="c-kw">#include</span> <span class="c-str">&lt;crossvmaf/crossvmaf.hpp&gt;</span>
+
+<span class="c-ty">crossvmaf::StreamOptions</span> options;
+options.reference_path = <span class="c-str">"reference.mp4"</span>;
+options.distorted_path = <span class="c-str">"distorted.mp4"</span>;
+
+<span class="c-kw">auto</span> opened = <span class="c-ty">crossvmaf::EvaluationStream</span>::open(<span class="c-fn">std::move</span>(options));
+<span class="c-kw">if</span> (!opened) { <span class="c-cm">/* opened.error().message */</span> }
+
+<span class="c-kw">auto</span> stream = <span class="c-fn">std::move</span>(opened).value();
+<span class="c-kw">for</span> (;;) {
+  <span class="c-kw">auto</span> batch = stream-&gt;<span class="c-fn">next</span>();          <span class="c-cm">// ordered batches</span>
+  <span class="c-kw">if</span> (batch-&gt;empty()) <span class="c-kw">break</span>;
+  consume(batch.value());
+}
+
+<span class="c-kw">auto</span> tail = stream-&gt;<span class="c-fn">finish</span>();          <span class="c-cm">// drain GPU + temporal tail</span></code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ DOWNLOAD ============ -->
+    <section id="download" class="section">
+      <div class="sec-head reveal">
+        <p class="sec-kicker mono"><span class="sec-num">07</span><span data-i18n="dl.kicker">GET CROSSVMAF</span></p>
+        <h2 class="sec-title" data-i18n="dl.title">Start measuring.</h2>
+      </div>
+      <div class="compat reveal">
+        <span class="badge mono">WINDOWS X64</span>
+        <span class="badge mono">LINUX X86-64</span>
+        <span class="badge mono">VULKAN 1.1+</span>
+        <span class="badge mono">H.264</span>
+        <span class="badge mono">HEVC</span>
+        <span class="badge mono">AV1</span>
+        <span class="badge mono">VP8 / VP9</span>
+        <span class="badge mono">MPEG-1/2</span>
+        <span class="badge mono">MPEG-4 P2</span>
+        <span class="badge mono">VC-1 · WMV3</span>
+        <span class="badge mono">FLV1</span>
+        <span class="badge mono">MJPEG</span>
+        <span class="badge badge-off mono" data-i18n="dl.noMac">macOS — NOT SUPPORTED</span>
+        <span class="badge badge-off mono" data-i18n="dl.noArm">ARM — NOT SUPPORTED</span>
+      </div>
+      <div class="cta-panel reveal">
+        <div class="cta-glow" aria-hidden="true"></div>
+        <h3 data-i18n="dl.panelT">Grab the release, or build it yourself.</h3>
+        <p data-i18n="dl.panelD">The Windows x64 package ships the CLI, Studio, bundled models, and license notices. Building from source needs CMake, Ninja, LLVM/Clang, Python, and Rust for Studio.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary magnetic" href="https://github.com/MapleMapleCat/CROSSVMAF/releases" target="_blank" rel="noopener">
+            <span data-i18n="dl.releases">Releases — Windows x64</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/MapleMapleCat/CROSSVMAF#build" target="_blank" rel="noopener">
+            <span data-i18n="dl.build">Build from source</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg>
+          </a>
+        </div>
+        <p class="cta-note mono" data-i18n="dl.note">REQUIRES MSVC X64 RUNTIME + VULKAN-CAPABLE GPU DRIVER · KEEP BUNDLED DLLS AND licenses/ TOGETHER</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="f-col f-brand">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <rect x="1" y="1" width="30" height="30" rx="7" class="mark-frame"/>
+            <path d="M6 20 L10 20 L12.5 11 L16 24 L19 14 L21 18 L26 18" class="mark-pulse" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="26" cy="18" r="2.2" class="mark-dot"/>
+          </svg>
+          <span class="brand-name">CrossVMAF</span>
+        </div>
+        <p class="f-note" data-i18n="f.disclaimer">CrossVMAF is an independent C++20 implementation of the VMAF 1.0.16 pipeline. It does not modify or link against Netflix libvmaf, and is not an official Netflix product.</p>
+      </div>
+      <div class="f-col">
+        <p class="f-head mono" data-i18n="f.license">LICENSE</p>
+        <p class="f-note" data-i18n="f.licenseD">BSD-2-Clause-Patent. Dependencies keep their own terms: FFmpeg LGPL-2.1-or-later, dav1d BSD-2-Clause, Slint under separate terms.</p>
+      </div>
+      <div class="f-col">
+        <p class="f-head mono" data-i18n="f.links">LINKS</p>
+        <a href="https://github.com/MapleMapleCat/CROSSVMAF" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/MapleMapleCat/CROSSVMAF/issues" target="_blank" rel="noopener" data-i18n="f.issues">Issues</a>
+        <a href="https://github.com/MapleMapleCat/CROSSVMAF/releases" target="_blank" rel="noopener" data-i18n="f.releases">Releases</a>
+        <a href="https://github.com/MapleMapleCat/CROSSVMAF/blob/main/models/README.md" target="_blank" rel="noopener" data-i18n="f.models">Model provenance</a>
+      </div>
+    </div>
+    <div class="f-bottom mono"><span>© <span id="year">2026</span> CrossVMAF contributors</span><span data-i18n="f.made">BSD-2-CLAUSE-PATENT · NOT A NETFLIX PRODUCT</span></div>
+  </footer>
+
+  <script src="main.js" defer></script>
+</body>
 </html>
