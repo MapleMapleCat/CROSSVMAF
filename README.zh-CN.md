@@ -22,7 +22,7 @@ CrossVMAF 不修改或链接 Netflix libvmaf，也不是 Netflix 官方产品。
 - **Vulkan 计算：** 在不同厂商的兼容 GPU 上进行视频质量评估。
 - **桌面工作流：** 将评估任务加入队列、比较结果、查看质量曲线，并导出 JSON、CSV 或客户 PDF 报告。
 - **自动选择模型：** 根据参考视频解码后的尺寸和帧率，从八个内置模型中自动选择；命令行支持手动指定。
-- **硬件解码：** 在支持的设备上使用 Intel QSV、NVIDIA NVDEC、Vulkan Video 或 Linux VA-API；自动模式支持回退到软件解码。
+- **硬件解码：** 在支持的设备上使用 Intel QSV、NVIDIA NVDEC、AMD AMF（Windows）、Vulkan Video 或 Linux VA-API；自动模式支持回退到软件解码。
 - **CPU 验证：** 使用 `--verify-cpu`，将 GPU 结果与独立 CPU 参考实现的计算结果进行比较。
 
 ## 快速上手
@@ -89,7 +89,7 @@ python -m pip install meson ninja
 ```
 
 Vulkan Video 解码还需要 Vulkan 1.3 和相应的解码扩展。
-QSV、NVDEC 和 VA-API 各有设备及驱动要求，详见[解码后端](#解码后端)。
+QSV、NVDEC、AMF 和 VA-API 各有设备及驱动要求，详见[解码后端](#解码后端)。
 
 ### Windows — PowerShell 7
 
@@ -216,7 +216,8 @@ VMAF 特征计算始终使用所选的 Vulkan 计算设备，即使视频采用�
 | --- | --- | --- |
 | Intel | QSV → Vulkan Video → 软件解码 | QSV → VA-API → 软件解码 |
 | NVIDIA | NVDEC → Vulkan Video → 软件解码 | NVDEC → VA-API → 软件解码 |
-| AMD 或其他厂商 | Vulkan Video → 软件解码 | VA-API → 软件解码 |
+| AMD | AMF → Vulkan Video → 软件解码 | VA-API → 软件解码 |
+| 其他厂商 | Vulkan Video → 软件解码 | VA-API → 软件解码 |
 
 候选后端必须通过构建配置、平台、设备、编解码器和驱动检查。
 自动模式会尝试 GPU 传输，并可在启动阶段以软件解码重新打开两个输入。
@@ -254,7 +255,7 @@ VA-API 必须在构建时启用，才会参与 Linux 上的自动选择。
 | 选项 | 用途 / 默认值 |
 | --- | --- |
 | `--decode auto\|hardware\|software` | 解码模式；默认 `auto` |
-| `--decode-backend auto\|vulkan\|qsv\|nvdec\|vaapi` | 解码后端；默认 `auto`；明确指定后端后不自动更换 |
+| `--decode-backend auto\|vulkan\|qsv\|nvdec\|vaapi\|amf` | 解码后端；默认 `auto`；明确指定后端后不自动更换 |
 | `--decode-device same\|ID` | 解码设备；默认与计算使用同一块物理 GPU |
 | `--decode-transfer auto\|gpu\|host` | 帧传输策略；默认 `auto` |
 | `--decoded-frame-queue N` | 每个输入的缓冲帧数：`1..64`；默认 `4` |

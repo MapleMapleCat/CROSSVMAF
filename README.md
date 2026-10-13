@@ -27,7 +27,7 @@ Netflix product.
   curves, and export JSON, CSV, or customer PDF reports.
 - **Automatic model selection:** choose from eight bundled models based on the
   reference video's decoded dimensions and frame rate, with CLI overrides.
-- **Hardware decoding:** select Intel QSV, NVIDIA NVDEC, Vulkan Video, or Linux
+- **Hardware decoding:** select Intel QSV, NVIDIA NVDEC, AMD AMF (Windows), Vulkan Video, or Linux
   VA-API where supported, with software fallback in automatic mode.
 - **CPU verification:** compare GPU results with an independent CPU reference
   pass using `--verify-cpu`.
@@ -98,7 +98,7 @@ python -m pip install meson ninja
 ```
 
 Vulkan Video decoding additionally needs Vulkan 1.3 and the relevant decode
-extensions. QSV, NVDEC, and VA-API have their own device and driver requirements;
+extensions. QSV, NVDEC, AMF, and VA-API have their own device and driver requirements;
 see [decode backends](#decode-backends).
 
 ### Windows — PowerShell 7
@@ -241,7 +241,8 @@ tries eligible backends in this order:
 | --- | --- | --- |
 | Intel | QSV → Vulkan Video → software | QSV → VA-API → software |
 | NVIDIA | NVDEC → Vulkan Video → software | NVDEC → VA-API → software |
-| AMD or other vendor | Vulkan Video → software | VA-API → software |
+| AMD | AMF → Vulkan Video → software | VA-API → software |
+| Other vendor | Vulkan Video → software | VA-API → software |
 
 Candidates must pass build, platform, device, codec, and driver checks. Automatic
 mode tries GPU transfer and can reopen both inputs in software during startup.
@@ -280,7 +281,7 @@ Run `& $CrossVmaf --help` for the command-line reference.
 | Option | Purpose / default |
 | --- | --- |
 | `--decode auto\|hardware\|software` | Decode mode; default: `auto` |
-| `--decode-backend auto\|vulkan\|qsv\|nvdec\|vaapi` | Backend; default: `auto`; named backends are strict |
+| `--decode-backend auto\|vulkan\|qsv\|nvdec\|vaapi\|amf` | Backend; default: `auto`; named backends are strict |
 | `--decode-device same\|ID` | Decoder device; default: same physical GPU as compute |
 | `--decode-transfer auto\|gpu\|host` | Frame transfer policy; default: `auto` |
 | `--decoded-frame-queue N` | Buffered frames per source: `1..64`; default: `4` |
