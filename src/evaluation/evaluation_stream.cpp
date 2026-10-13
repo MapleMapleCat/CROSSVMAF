@@ -3877,8 +3877,9 @@ Result<std::unique_ptr<EvaluationStream>> detail::EvaluationStreamTelemetryOpene
                 {options.decode_mode != DecodeMode::software &&
                      (options.decode_backend == DecodeBackendPreference::automatic || options.decode_backend == DecodeBackendPreference::vulkan_video),
                  options.decode_mode != DecodeMode::software && options.decode_transfer != DecodeTransferPolicy::host &&
-                     (options.decode_backend == DecodeBackendPreference::qsv || options.decode_backend == DecodeBackendPreference::nvdec ||
-                      options.decode_backend == DecodeBackendPreference::vaapi || options.decode_mode == DecodeMode::hardware)});
+                     (options.decode_backend == DecodeBackendPreference::automatic ||
+                      options.decode_backend == DecodeBackendPreference::qsv || options.decode_backend == DecodeBackendPreference::nvdec ||
+                      options.decode_backend == DecodeBackendPreference::vaapi || options.decode_backend == DecodeBackendPreference::amf || options.decode_mode == DecodeMode::hardware)});
         if (!prepared_vulkan_device) {
             return Result<std::unique_ptr<EvaluationStream>>::failure(
                 prepared_vulkan_device.error());

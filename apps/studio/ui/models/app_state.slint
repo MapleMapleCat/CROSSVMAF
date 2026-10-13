@@ -244,7 +244,7 @@ export global VM {
     in-out property <int> decode-device-idx: 0;
     in-out property <[string]> decode-device-options: [@tr("Same as compute GPU")];
     callback decode-device-changed(int);
-    in-out property <[string]> decode-backend-options: [@tr("Automatic"), "Vulkan Video", "Intel QSV", "NVIDIA NVDEC", "VA-API"];
+    in-out property <[string]> decode-backend-options: [@tr("Automatic"), "Vulkan Video", "Intel QSV", "NVIDIA NVDEC", "VA-API", "AMD AMF"];
     in-out property <string> decode-device-status: @tr("Device capabilities are confirmed when a video is opened.");
     in-out property <int> decoder-threads: 0;
     in-out property <int> decode-buffer: 4;

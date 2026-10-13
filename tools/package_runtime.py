@@ -133,6 +133,8 @@ def main() -> int:
         status = subprocess.check_output(["git", "-C", str(args.source), "status", "--porcelain"], text=True)
         backends = dict(item.split("=", 1) for item in args.backend)
         driver_dependencies = {"vulkan": "system Vulkan loader and compute driver"}
+        if backends.get("amf") == "ON":
+            driver_dependencies["amf"] = "AMD AMF runtime from the Radeon driver, loaded on demand"
         if backends.get("nvdec") == "ON":
             driver_dependencies["nvdec"] = "NVIDIA CUDA and decode driver libraries, loaded on demand"
         if backends.get("qsv") == "ON":

@@ -41,7 +41,7 @@ add_custom_target(crossvmaf_package
         --reader "${CROSSVMAF_LLVM_READOBJ}" --contract "${CROSSVMAF_FFMPEG_ABI_CONTRACT}"
         --abi-major "${CROSSVMAF_FFMPEG_ABI_MAJOR}"
         --ffmpeg-name "$<TARGET_FILE_NAME:crossvmaf_ffmpeg>"
-        --backend "qsv=${CROSSVMAF_ENABLE_QSV}" --backend "nvdec=${CROSSVMAF_ENABLE_NVDEC}"
+        --backend "amf=${CROSSVMAF_ENABLE_AMF}" --backend "qsv=${CROSSVMAF_ENABLE_QSV}" --backend "nvdec=${CROSSVMAF_ENABLE_NVDEC}"
         --backend "vulkan_video=${CROSSVMAF_ENABLE_VULKAN_VIDEO}" --backend "vaapi=${CROSSVMAF_ENABLE_VAAPI}"
     DEPENDS ${crossvmaf_package_targets} crossvmaf_ffmpeg_abi_check
     VERBATIM USES_TERMINAL)

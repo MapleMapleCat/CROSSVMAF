@@ -41,7 +41,7 @@ Result<AVFrame *> FrameTransfer::gpu(const AVFrame &source,
     if (!frames_) {
         auto allocation_device = destination;
 #if defined(_WIN32)
-        if (source.format == AV_PIX_FMT_QSV) {
+        if (source.format == AV_PIX_FMT_QSV || source.format == AV_PIX_FMT_AMF_SURFACE) {
             auto local = destination->create_local_frame_context();
             if (!local) return Result<AVFrame*>::failure(local.error());
             allocation_device_ = std::move(local).value();
@@ -62,7 +62,7 @@ Result<AVFrame *> FrameTransfer::gpu(const AVFrame &source,
         context->height = source.height;
         bool separate_planes = source.format == AV_PIX_FMT_CUDA;
 #if defined(_WIN32)
-        separate_planes = separate_planes || source.format == AV_PIX_FMT_QSV;
+        separate_planes = separate_planes || source.format == AV_PIX_FMT_QSV || source.format == AV_PIX_FMT_AMF_SURFACE;
 #endif
         if (separate_planes) {
             auto* native_frames = static_cast<AVVulkanFramesContext*>(context->hwctx);
@@ -75,7 +75,7 @@ Result<AVFrame *> FrameTransfer::gpu(const AVFrame &source,
         }
     }
 #if defined(_WIN32)
-    if (source.format == AV_PIX_FMT_QSV) {
+    if (source.format == AV_PIX_FMT_QSV || source.format == AV_PIX_FMT_AMF_SURFACE) {
         if (!d3d11_)
             d3d11_ = std::make_unique<D3d11VulkanTransfer>();
         auto result = d3d11_->transfer(source, frames_, destination);

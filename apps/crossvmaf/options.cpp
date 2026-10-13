@@ -52,7 +52,7 @@ std::string_view usage() noexcept {
         "  --device auto|UUID         Default: auto\n"
         "  --decode auto|hardware|software  Default: auto; hardware requires "
         "hardware for both inputs (no software fallback)\n"
-        "  --decode-backend auto|vulkan|qsv|nvdec|vaapi  Explicit backend is strict\n"
+        "  --decode-backend auto|vulkan|qsv|nvdec|vaapi|amf  Explicit backend is strict\n"
         "  --decode-device same|ID    Default: same physical GPU as compute\n"
         "  --decode-transfer auto|gpu|host  gpu forbids host transfer\n"
         "  --list-decode-backends     Show compiled backends\n"
@@ -131,7 +131,7 @@ Result<Options> parse_options(int argc, char** argv) {
             }
         } else if (argument == "--decode-backend") {
             const auto parsed = parse_decode_backend_preference(value);
-            if (!parsed) return Result<Options>::failure({ErrorCode::invalid_argument, "decode backend must be auto, vulkan, qsv, nvdec or vaapi"});
+            if (!parsed) return Result<Options>::failure({ErrorCode::invalid_argument, "decode backend must be auto, vulkan, qsv, nvdec, vaapi or amf"});
             options.decode_backend = *parsed;
         } else if (argument == "--decode-device") {
             if (value.empty()) return Result<Options>::failure({ErrorCode::invalid_argument, "decode device cannot be empty"});

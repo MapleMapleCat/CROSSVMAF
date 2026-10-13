@@ -1,4 +1,5 @@
 #include "video/transfers/d3d11_vulkan.hpp"
+#include "video/backends/ffmpeg_device.hpp"
 #include "video/backends/vulkan.hpp"
 #include "video/ffmpeg.hpp"
 extern "C" {
@@ -81,13 +82,13 @@ class D3d11VulkanTransfer::Impl final {
         }
         if (!memory_extension || !mutex_extension)
             return Result<void>::failure(unavailable(
-                "QSV GPU transfer requires external_memory_win32 and win32_keyed_mutex"));
+                "D3D11 GPU transfer requires external_memory_win32 and win32_keyed_mutex"));
         auto *texture = reinterpret_cast<ID3D11Texture2D *>(child.data[0]);
         if (!texture || !child.hw_frames_ctx)
-            return Result<void>::failure(unavailable("QSV returned no D3D11 texture context"));
+            return Result<void>::failure(unavailable("D3D11 returned no D3D11 texture context"));
         texture->GetDesc(&description);
         if (description.Format != DXGI_FORMAT_NV12 && description.Format != DXGI_FORMAT_P010)
-            return Result<void>::failure(unavailable("QSV shared transfer requires NV12/P010"));
+            return Result<void>::failure(unavailable("D3D11 shared transfer requires NV12/P010"));
         description.ArraySize = description.MipLevels = 1;
         description.Usage = D3D11_USAGE_DEFAULT;
         description.CPUAccessFlags = 0;
@@ -99,11 +100,11 @@ class D3d11VulkanTransfer::Impl final {
         HRESULT hr = d3d->device->CreateTexture2D(&description, nullptr, &shared_texture);
         if (FAILED(hr))
             return Result<void>::failure(
-                unavailable("creating shared QSV texture failed: " + std::to_string(hr)));
+                unavailable("creating shared D3D11 texture failed: " + std::to_string(hr)));
         Microsoft::WRL::ComPtr<IDXGIResource> resource;
         if (FAILED(shared_texture.As(&resource)) || FAILED(shared_texture.As(&keyed_mutex)) ||
             FAILED(resource->GetSharedHandle(&shared_handle)))
-            return Result<void>::failure(unavailable("exporting shared QSV texture failed"));
+            return Result<void>::failure(unavailable("exporting shared D3D11 texture failed"));
         const auto query = reinterpret_cast<PFN_vkGetPhysicalDeviceImageFormatProperties2>(
             vk->get_proc_addr(vk->inst, "vkGetPhysicalDeviceImageFormatProperties2"));
         VkPhysicalDeviceExternalImageFormatInfo external{
@@ -127,7 +128,7 @@ class D3d11VulkanTransfer::Impl final {
             !(external_properties.externalMemoryProperties.externalMemoryFeatures &
               VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT))
             return Result<void>::failure(
-                unavailable("Vulkan driver cannot import QSV shared texture format"));
+                unavailable("Vulkan driver cannot import D3D11 shared texture format"));
         VkExternalMemoryImageCreateInfo external_image{
             VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO, nullptr,
             VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT};
@@ -144,7 +145,7 @@ class D3d11VulkanTransfer::Impl final {
         VkResult result = table.vkCreateImage(vk->act_dev, &image_info, nullptr, &image);
         if (result != VK_SUCCESS)
             return Result<void>::failure(
-                unavailable("creating imported QSV image failed: " + std::to_string(result)));
+                unavailable("creating imported D3D11 image failed: " + std::to_string(result)));
         const auto get_device_proc = reinterpret_cast<PFN_vkGetDeviceProcAddr>(
             vk->get_proc_addr(vk->inst, "vkGetDeviceProcAddr"));
         const auto handle_properties = reinterpret_cast<PFN_vkGetMemoryWin32HandlePropertiesKHR>(
@@ -154,12 +155,12 @@ class D3d11VulkanTransfer::Impl final {
         if (!handle_properties ||
             handle_properties(vk->act_dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT,
                               shared_handle, &handle_info) != VK_SUCCESS)
-            return Result<void>::failure(unavailable("querying QSV shared texture memory failed"));
+            return Result<void>::failure(unavailable("querying D3D11 shared texture memory failed"));
         VkMemoryRequirements requirements{};
         table.vkGetImageMemoryRequirements(vk->act_dev, image, &requirements);
         const auto compatible = requirements.memoryTypeBits & handle_info.memoryTypeBits;
         if (!compatible)
-            return Result<void>::failure(unavailable("QSV/Vulkan memory types are incompatible"));
+            return Result<void>::failure(unavailable("D3D11/Vulkan memory types are incompatible"));
         std::uint32_t type = 0;
         while (!(compatible & (1U << type)))
             ++type;
@@ -175,7 +176,7 @@ class D3d11VulkanTransfer::Impl final {
             result = table.vkBindImageMemory(vk->act_dev, image, memory, 0);
         if (result != VK_SUCCESS)
             return Result<void>::failure(
-                unavailable("importing QSV shared memory failed: " + std::to_string(result)));
+                unavailable("importing D3D11 shared memory failed: " + std::to_string(result)));
         bool found = false;
         for (int i = 0; i < vk->nb_qf; ++i)
             if (vk->qf[i].flags & VK_QUEUE_COMPUTE_BIT) {
@@ -184,7 +185,7 @@ class D3d11VulkanTransfer::Impl final {
                 break;
             }
         if (!found)
-            return Result<void>::failure(unavailable("QSV transfer has no shared compute queue"));
+            return Result<void>::failure(unavailable("D3D11 transfer has no shared compute queue"));
         VkDeviceQueueInfo2 queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2, nullptr,
                                       vk->queue_flags, family, 0};
         table.vkGetDeviceQueue2(vk->act_dev, &queue_info, &queue);
@@ -200,7 +201,7 @@ class D3d11VulkanTransfer::Impl final {
             result = table.vkCreateFence(vk->act_dev, &fence_info, nullptr, &fence);
         if (result != VK_SUCCESS)
             return Result<void>::failure(
-                {ErrorCode::backend_error, "allocating QSV transfer synchronization failed"});
+                {ErrorCode::backend_error, "allocating D3D11 transfer synchronization failed"});
         return Result<void>::success();
     }
     Result<AVFrame *> copy(const AVFrame &child, const AVFrame &source,
@@ -209,28 +210,28 @@ class D3d11VulkanTransfer::Impl final {
             const auto result = table.vkWaitForFences(vk->act_dev, 1, &fence, VK_TRUE, UINT64_MAX);
             if (result != VK_SUCCESS)
                 return Result<AVFrame *>::failure(
-                    {ErrorCode::device_lost, "waiting for QSV transfer failed"});
+                    {ErrorCode::device_lost, "waiting for D3D11 transfer failed"});
             submitted = false;
             source_owner.reset();
         }
         OwnedFrame output(av_frame_alloc());
         if (!output)
             return Result<AVFrame *>::failure(
-                {ErrorCode::backend_error, "allocating QSV transfer frame"});
+                {ErrorCode::backend_error, "allocating D3D11 transfer frame"});
         int error = av_hwframe_get_buffer(destination_frames, output.get(), 0);
         if (error < 0)
             return Result<AVFrame *>::failure(
-                unavailable(ffmpeg_error_message(error, "allocating QSV Vulkan destination")));
+                unavailable(ffmpeg_error_message(error, "allocating D3D11 Vulkan destination")));
         error = av_frame_copy_props(output.get(), &source);
         if (error < 0)
-            return Result<AVFrame *>::failure({ErrorCode::backend_error, "copying QSV metadata"});
+            return Result<AVFrame *>::failure({ErrorCode::backend_error, "copying D3D11 metadata"});
         auto *frame = reinterpret_cast<AVVkFrame *>(output->data[0]);
         std::uint32_t image_count = 0;
         while (image_count < AV_NUM_DATA_POINTERS && frame->img[image_count])
             ++image_count;
         if (image_count < 1 || image_count > 2)
             return Result<AVFrame *>::failure(
-                unavailable("unsupported QSV destination image arrangement"));
+                unavailable("unsupported D3D11 destination image arrangement"));
         std::array<VkImageMemoryBarrier2, 3> before{};
         before[0] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         before[0].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
@@ -248,7 +249,7 @@ class D3d11VulkanTransfer::Impl final {
             if (frame->queue_family[i] != VK_QUEUE_FAMILY_IGNORED &&
                 frame->queue_family[i] != family)
                 return Result<AVFrame *>::failure(
-                    unavailable("QSV destination requires cross-family ownership transfer"));
+                    unavailable("D3D11 destination requires cross-family ownership transfer"));
             auto &barrier = before[i + 1];
             barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
             barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -262,21 +263,21 @@ class D3d11VulkanTransfer::Impl final {
             barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             waits[i] = frame->sem_value[i];
             if (waits[i] == UINT64_MAX)
-                return Result<AVFrame *>::failure(unavailable("QSV transfer timeline exhausted"));
+                return Result<AVFrame *>::failure(unavailable("D3D11 transfer timeline exhausted"));
             signals[i] = waits[i] + 1;
         }
         source_owner.reset(av_frame_clone(&source));
         if (!source_owner)
-            return Result<AVFrame *>::failure({ErrorCode::backend_error, "retaining QSV source"});
+            return Result<AVFrame *>::failure({ErrorCode::backend_error, "retaining D3D11 source"});
         if (table.vkResetCommandPool(vk->act_dev, pool, 0) != VK_SUCCESS)
             return Result<AVFrame *>::failure(
-                unavailable("resetting QSV transfer commands failed"));
+                unavailable("resetting D3D11 transfer commands failed"));
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
                                        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
         VkResult result = table.vkBeginCommandBuffer(command, &begin);
         if (result != VK_SUCCESS)
             return Result<AVFrame *>::failure(
-                unavailable("beginning QSV transfer commands failed"));
+                unavailable("beginning D3D11 transfer commands failed"));
         VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dependency.imageMemoryBarrierCount = image_count + 1;
         dependency.pImageMemoryBarriers = before.data();
@@ -316,13 +317,13 @@ class D3d11VulkanTransfer::Impl final {
         dependency.pImageMemoryBarriers = after.data();
         table.vkCmdPipelineBarrier2(command, &dependency);
         if (table.vkEndCommandBuffer(command) != VK_SUCCESS)
-            return Result<AVFrame *>::failure(unavailable("ending QSV transfer commands failed"));
+            return Result<AVFrame *>::failure(unavailable("ending D3D11 transfer commands failed"));
         auto *child_frames = reinterpret_cast<AVHWFramesContext *>(child.hw_frames_ctx->data);
         auto *d3d = static_cast<AVD3D11VADeviceContext *>(child_frames->device_ctx->hwctx);
         const auto acquired = keyed_mutex->AcquireSync(0, 10000);
         if (acquired != S_OK)
             return Result<AVFrame *>::failure(unavailable(
-                "acquiring QSV transfer keyed mutex failed: " + std::to_string(acquired)));
+                "acquiring D3D11 transfer keyed mutex failed: " + std::to_string(acquired)));
         d3d->lock(d3d->lock_ctx);
         d3d->device_context->CopySubresourceRegion(
             shared_texture.Get(), 0, 0, 0, 0, reinterpret_cast<ID3D11Texture2D *>(child.data[0]),
@@ -332,7 +333,7 @@ class D3d11VulkanTransfer::Impl final {
         d3d->unlock(d3d->lock_ctx);
         if (FAILED(released))
             return Result<AVFrame *>::failure(
-                unavailable("releasing QSV transfer keyed mutex failed"));
+                unavailable("releasing D3D11 transfer keyed mutex failed"));
         const std::uint64_t acquire_key = 1, release_key = 0;
         const std::uint32_t timeout = 10000;
         VkWin32KeyedMutexAcquireReleaseInfoKHR mutex{
@@ -362,7 +363,7 @@ class D3d11VulkanTransfer::Impl final {
                             frame->sem};
         if (table.vkResetFences(vk->act_dev, 1, &fence) != VK_SUCCESS)
             return Result<AVFrame *>::failure(
-                {ErrorCode::device_lost, "resetting QSV transfer fence failed"});
+                {ErrorCode::device_lost, "resetting D3D11 transfer fence failed"});
         const auto synchronization = device_owner->queue_synchronization();
         if (synchronization.lock)
             synchronization.lock(synchronization.opaque, family, 0);
@@ -371,7 +372,7 @@ class D3d11VulkanTransfer::Impl final {
             synchronization.unlock(synchronization.opaque, family, 0);
         if (result != VK_SUCCESS)
             return Result<AVFrame *>::failure(
-                {ErrorCode::device_lost, "submitting QSV Vulkan transfer failed"});
+                {ErrorCode::device_lost, "submitting D3D11 Vulkan transfer failed"});
         submitted = true;
         for (std::uint32_t i = 0; i < image_count; ++i) {
             frame->sem_value[i] = signals[i];
@@ -393,30 +394,52 @@ Result<AVFrame *> D3d11VulkanTransfer::transfer(const AVFrame &source,
 #if defined(_WIN32)
     OwnedFrame child(av_frame_alloc());
     if (!child)
-        return Result<AVFrame *>::failure({ErrorCode::backend_error, "allocating QSV child frame"});
+        return Result<AVFrame *>::failure({ErrorCode::backend_error, "allocating D3D11 child frame"});
     if (!child_frames_) {
         AVBufferRef *child_device = nullptr;
         auto *source_frames = reinterpret_cast<AVHWFramesContext *>(source.hw_frames_ctx->data);
         int error = av_hwdevice_ctx_create_derived(&child_device, AV_HWDEVICE_TYPE_D3D11VA,
                                                    source_frames->device_ref, 0);
-        if (error >= 0)
+        if (error >= 0 && source.format == AV_PIX_FMT_AMF_SURFACE) {
+            // AMF's av_hwframe_map maps CPU memory, not a D3D11 surface.
+            // Retain the actual child device and borrow the texture directly.
+            child_frames_ = av_hwframe_ctx_alloc(child_device);
+            if (!child_frames_) {
+                error = AVERROR(ENOMEM);
+            } else {
+                auto *frames = reinterpret_cast<AVHWFramesContext *>(child_frames_->data);
+                frames->format = AV_PIX_FMT_D3D11;
+                frames->sw_format = source_frames->sw_format;
+                frames->width = source_frames->width;
+                frames->height = source_frames->height;
+                error = av_hwframe_ctx_init(child_frames_);
+            }
+        } else if (error >= 0)
             error = av_hwframe_ctx_create_derived(&child_frames_, AV_PIX_FMT_D3D11, child_device,
                                                   source.hw_frames_ctx,
                                                   AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
         av_buffer_unref(&child_device);
-        if (error < 0)
+        if (error < 0) {
+            av_buffer_unref(&child_frames_);
             return Result<AVFrame *>::failure(
-                unavailable(ffmpeg_error_message(error, "deriving QSV D3D11 frames")));
+                {error == AVERROR(ENOMEM) ? ErrorCode::backend_error : ErrorCode::hardware_decode_unavailable,
+                 ffmpeg_error_message(error, "deriving decoder D3D11 frames")});
+        }
     }
     child->hw_frames_ctx = av_buffer_ref(child_frames_);
     if (!child->hw_frames_ctx)
-        return Result<AVFrame *>::failure({ErrorCode::backend_error, "retaining QSV D3D11 frames"});
+        return Result<AVFrame *>::failure({ErrorCode::backend_error, "retaining D3D11 frames"});
     child->format = AV_PIX_FMT_D3D11;
-    const int error =
-        av_hwframe_map(child.get(), &source, AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
-    if (error < 0)
-        return Result<AVFrame *>::failure(
-            unavailable(ffmpeg_error_message(error, "mapping QSV to D3D11")));
+    if (source.format == AV_PIX_FMT_AMF_SURFACE) {
+        const auto bound = bind_amf_d3d11_surface(source, *child);
+        if (!bound) return Result<AVFrame *>::failure(bound.error());
+    } else {
+        const int error =
+            av_hwframe_map(child.get(), &source, AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
+        if (error < 0)
+            return Result<AVFrame *>::failure(
+                unavailable(ffmpeg_error_message(error, "mapping QSV to D3D11")));
+    }
     if (!impl_) {
         auto pending = std::make_unique<Impl>();
         const auto ready = pending->initialize(*child, std::move(device));

@@ -87,6 +87,7 @@ DecodeCandidatePlan plan_decode_candidates(const StreamOptions &options,
 
     add_vendor_backend(StreamDecodeBackend::qsv, 0x8086U);
     add_vendor_backend(StreamDecodeBackend::nvdec, 0x10deU);
+    add_vendor_backend(StreamDecodeBackend::amf, 0x1002U);
 #if defined(__linux__)
     add_backend(StreamDecodeBackend::vaapi);
 #elif defined(_WIN32)

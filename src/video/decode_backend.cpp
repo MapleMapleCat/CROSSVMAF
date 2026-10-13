@@ -16,6 +16,8 @@ bool backend_built(StreamDecodeBackend backend) noexcept {
         return CROSSVMAF_ENABLE_NVDEC != 0;
     case StreamDecodeBackend::vaapi:
         return CROSSVMAF_ENABLE_VAAPI != 0;
+    case StreamDecodeBackend::amf:
+        return CROSSVMAF_ENABLE_AMF != 0;
     }
     return false;
 }
@@ -29,6 +31,8 @@ StreamDecodeBackend requested_backend(DecodeBackendPreference preference) noexce
         return StreamDecodeBackend::nvdec;
     case DecodeBackendPreference::vaapi:
         return StreamDecodeBackend::vaapi;
+    case DecodeBackendPreference::amf:
+        return StreamDecodeBackend::amf;
     case DecodeBackendPreference::automatic:
         return StreamDecodeBackend::software;
     }
@@ -44,6 +48,8 @@ int backend_pixel_format(StreamDecodeBackend backend) noexcept {
         return AV_PIX_FMT_CUDA;
     case StreamDecodeBackend::vaapi:
         return AV_PIX_FMT_VAAPI;
+    case StreamDecodeBackend::amf:
+        return AV_PIX_FMT_AMF_SURFACE;
     case StreamDecodeBackend::software:
         return AV_PIX_FMT_NONE;
     }
@@ -59,6 +65,8 @@ DecodeStorage backend_storage(StreamDecodeBackend backend) noexcept {
         return DecodeStorage::cuda;
     case StreamDecodeBackend::vaapi:
         return DecodeStorage::vaapi;
+    case StreamDecodeBackend::amf:
+        return DecodeStorage::amf_surface;
     case StreamDecodeBackend::software:
         return DecodeStorage::host;
     }
@@ -67,6 +75,8 @@ DecodeStorage backend_storage(StreamDecodeBackend backend) noexcept {
 const AVCodec *find_backend_codec(StreamDecodeBackend backend, int codec_id) {
     if (backend == StreamDecodeBackend::qsv)
         return find_qsv_codec(codec_id);
+    if (backend == StreamDecodeBackend::amf)
+        return find_amf_codec(codec_id);
     if (backend == StreamDecodeBackend::software)
         return find_software_codec(codec_id);
     if (codec_id == AV_CODEC_ID_AV1) {
@@ -110,6 +120,9 @@ void select_backend_format(AVCodecContext &context, StreamDecodeBackend backend)
         break;
     case StreamDecodeBackend::vaapi:
         context.get_format = strict_format<AV_PIX_FMT_VAAPI>;
+        break;
+    case StreamDecodeBackend::amf:
+        context.get_format = strict_format<AV_PIX_FMT_AMF_SURFACE>;
         break;
     case StreamDecodeBackend::software:
         break;
@@ -164,8 +177,13 @@ std::vector<DecodeBackendInfo> enumerate_decode_backends() {
     std::vector<DecodeBackendInfo> result;
     for (auto backend :
          {StreamDecodeBackend::software, StreamDecodeBackend::vulkan_video,
-          StreamDecodeBackend::qsv, StreamDecodeBackend::nvdec, StreamDecodeBackend::vaapi}) {
+          StreamDecodeBackend::qsv, StreamDecodeBackend::nvdec, StreamDecodeBackend::vaapi,
+          StreamDecodeBackend::amf}) {
         bool platform = true;
+#if !defined(_WIN32)
+        if (backend == StreamDecodeBackend::amf)
+            platform = false;
+#endif
 #if !defined(__linux__)
         if (backend == StreamDecodeBackend::vaapi)
             platform = false;

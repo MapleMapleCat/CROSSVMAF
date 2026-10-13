@@ -58,6 +58,7 @@ template <typename Item>
     case StreamDecodeBackend::vulkan_video: return "Vulkan Video";
     case StreamDecodeBackend::qsv: return "Intel QSV";
     case StreamDecodeBackend::nvdec: return "NVIDIA NVDEC";
+    case StreamDecodeBackend::amf: return "AMD AMF";
     case StreamDecodeBackend::vaapi: return "VA-API";
     }
     return i18n::tr("Unknown backend");

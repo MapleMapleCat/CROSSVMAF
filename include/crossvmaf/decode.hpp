@@ -8,11 +8,11 @@
 #include <vector>
 
 namespace crossvmaf {
-enum class StreamDecodeBackend : std::uint8_t { software, vulkan_video, qsv, nvdec, vaapi };
-enum class DecodeBackendPreference : std::uint8_t { automatic, vulkan_video, qsv, nvdec, vaapi };
+enum class StreamDecodeBackend : std::uint8_t { software, vulkan_video, qsv, nvdec, vaapi, amf };
+enum class DecodeBackendPreference : std::uint8_t { automatic, vulkan_video, qsv, nvdec, vaapi, amf };
 enum class DecodeTransferPolicy : std::uint8_t { automatic, gpu_only, host };
 enum class DecodeTransferPath : std::uint8_t { host, native, mapped, gpu_copy };
-enum class DecodeStorage : std::uint8_t { host, vulkan, qsv_surface, cuda, vaapi };
+enum class DecodeStorage : std::uint8_t { host, vulkan, qsv_surface, cuda, vaapi, amf_surface };
 
 [[nodiscard]] constexpr std::string_view to_string(StreamDecodeBackend value) noexcept {
     switch (value) {
@@ -26,6 +26,8 @@ enum class DecodeStorage : std::uint8_t { host, vulkan, qsv_surface, cuda, vaapi
         return "nvdec";
     case StreamDecodeBackend::vaapi:
         return "vaapi";
+    case StreamDecodeBackend::amf:
+        return "amf";
     }
     return "unknown";
 }
@@ -41,6 +43,8 @@ enum class DecodeStorage : std::uint8_t { host, vulkan, qsv_surface, cuda, vaapi
         return "nvdec";
     case DecodeBackendPreference::vaapi:
         return "vaapi";
+    case DecodeBackendPreference::amf:
+        return "amf";
     }
     return "unknown";
 }
@@ -80,6 +84,8 @@ enum class DecodeStorage : std::uint8_t { host, vulkan, qsv_surface, cuda, vaapi
         return "cuda";
     case DecodeStorage::vaapi:
         return "vaapi";
+    case DecodeStorage::amf_surface:
+        return "amf_surface";
     }
     return "unknown";
 }
@@ -87,7 +93,7 @@ enum class DecodeStorage : std::uint8_t { host, vulkan, qsv_surface, cuda, vaapi
 parse_decode_backend_preference(std::string_view value) noexcept {
     for (auto backend : {DecodeBackendPreference::automatic, DecodeBackendPreference::vulkan_video,
                          DecodeBackendPreference::qsv, DecodeBackendPreference::nvdec,
-                         DecodeBackendPreference::vaapi}) {
+                         DecodeBackendPreference::vaapi, DecodeBackendPreference::amf}) {
         if (to_string(backend) == value)
             return backend;
     }

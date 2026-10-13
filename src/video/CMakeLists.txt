@@ -17,6 +17,7 @@ add_library(crossvmaf_video STATIC
     transfers/d3d11_vulkan.cpp
     backends/nvdec.cpp
     backends/qsv.cpp
+    backends/amf.cpp
     backends/vaapi.cpp
     backends/software.cpp
     probe.cpp
@@ -36,6 +37,9 @@ endif()
 if(CROSSVMAF_ENABLE_NVDEC)
     target_include_directories(crossvmaf_video SYSTEM PRIVATE "${crossvmaf_nvcodec_SOURCE_DIR}/include")
     target_link_libraries(crossvmaf_video PRIVATE ${CMAKE_DL_LIBS})
+endif()
+if(CROSSVMAF_ENABLE_AMF)
+    target_include_directories(crossvmaf_video SYSTEM PRIVATE "${crossvmaf_amf_include}")
 endif()
 crossvmaf_compile_shader(
     crossvmaf_video

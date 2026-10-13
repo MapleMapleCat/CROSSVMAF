@@ -40,7 +40,8 @@
         "FETCHCONTENT_BASE_DIR": "${sourceDir}/.cache/fetchcontent",
         "CROSSVMAF_BUILD_TOOLS": "ON",
         "CROSSVMAF_ENABLE_QSV": "ON",
-        "CROSSVMAF_ENABLE_NVDEC": "ON"
+        "CROSSVMAF_ENABLE_NVDEC": "ON",
+        "CROSSVMAF_ENABLE_AMF": "ON"
       }
     },
     {
@@ -61,7 +62,8 @@
         "FETCHCONTENT_BASE_DIR": "${sourceDir}/.cache/fetchcontent",
         "CROSSVMAF_BUILD_TOOLS": "ON",
         "CROSSVMAF_ENABLE_QSV": "ON",
-        "CROSSVMAF_ENABLE_NVDEC": "ON"
+        "CROSSVMAF_ENABLE_NVDEC": "ON",
+        "CROSSVMAF_ENABLE_AMF": "ON"
       }
     }
   ],

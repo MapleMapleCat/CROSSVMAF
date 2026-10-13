@@ -55,6 +55,9 @@ Result<std::shared_ptr<DecodeDevice>> create_ffmpeg_decode_device(const DecodeDe
     case StreamDecodeBackend::vaapi:
         created = open_vaapi_context(info);
         break;
+    case StreamDecodeBackend::amf:
+        created = open_amf_context(info);
+        break;
     default:
         break;
     }
@@ -73,8 +76,9 @@ Result<std::vector<DecodeDeviceInfo>>
 enumerate_platform_decode_devices(StreamDecodeBackend backend) {
     std::vector<DecodeDeviceInfo> result;
 #if defined(_WIN32)
-    if (backend != StreamDecodeBackend::qsv)
+    if (backend != StreamDecodeBackend::qsv && backend != StreamDecodeBackend::amf)
         return Result<std::vector<DecodeDeviceInfo>>::success({});
+    const UINT vendor = backend == StreamDecodeBackend::amf ? 0x1002U : 0x8086U;
     Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
         return Result<std::vector<DecodeDeviceInfo>>::failure(
@@ -86,7 +90,7 @@ enumerate_platform_decode_devices(StreamDecodeBackend backend) {
         if (!adapter)
             break;
         DXGI_ADAPTER_DESC1 desc{};
-        if (FAILED(adapter->GetDesc1(&desc)) || desc.VendorId != 0x8086 ||
+        if (FAILED(adapter->GetDesc1(&desc)) || desc.VendorId != vendor ||
             (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
             continue;
         const auto *bytes = reinterpret_cast<const unsigned char *>(&desc.AdapterLuid);
@@ -98,9 +102,11 @@ enumerate_platform_decode_devices(StreamDecodeBackend backend) {
         }
         char name[512]{};
         WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof(name), nullptr, nullptr);
-        result.push_back({backend, "qsv:" + id, name, id, std::to_string(index)});
+        result.push_back({backend, std::string(to_string(backend)) + ":" + id, name, id, std::to_string(index)});
     }
 #elif defined(__linux__)
+    if (backend == StreamDecodeBackend::amf)
+        return Result<std::vector<DecodeDeviceInfo>>::success({});
     std::error_code error;
     for (const auto &entry : std::filesystem::directory_iterator("/dev/dri", error)) {
         if (!entry.path().filename().string().starts_with("renderD"))

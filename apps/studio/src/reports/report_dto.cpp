@@ -71,7 +71,7 @@ namespace {
 [[nodiscard]] StreamDecodeBackend parse_decode_backend(
     std::string_view name) {
     for (auto backend : {StreamDecodeBackend::software, StreamDecodeBackend::vulkan_video,
-                         StreamDecodeBackend::qsv, StreamDecodeBackend::nvdec, StreamDecodeBackend::vaapi})
+                         StreamDecodeBackend::qsv, StreamDecodeBackend::nvdec, StreamDecodeBackend::vaapi, StreamDecodeBackend::amf})
         if (to_string(backend) == name) return backend;
     throw std::runtime_error("unknown decode backend in report");
 }
@@ -355,7 +355,7 @@ template <typename T>
     statistics.decode.transfer_nanoseconds = document.value("transfer_nanoseconds", std::uint64_t{});
     const auto storage = document.value("decode_storage", statistics.decode_backend == StreamDecodeBackend::vulkan_video ? std::string("vulkan") : std::string("host"));
     bool storage_valid = false;
-    for (auto value : {DecodeStorage::host, DecodeStorage::vulkan, DecodeStorage::qsv_surface, DecodeStorage::cuda, DecodeStorage::vaapi})
+    for (auto value : {DecodeStorage::host, DecodeStorage::vulkan, DecodeStorage::qsv_surface, DecodeStorage::cuda, DecodeStorage::vaapi, DecodeStorage::amf_surface})
         if (to_string(value) == storage) { statistics.decode.native_storage = value; storage_valid = true; }
     const auto path = document.value("decode_transfer", statistics.decode_backend == StreamDecodeBackend::vulkan_video ? std::string("native") : std::string("host"));
     bool path_valid = false;

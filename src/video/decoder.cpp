@@ -542,9 +542,7 @@ class Decoder::State final {
             return Result<void>::failure(
                 {ErrorCode::unsupported_format,
                  ffmpeg_error_message(codec_open_result,
-                                      use_vulkan_hardware_decoder
-                                          ? "opening Vulkan hardware video decoder"
-                                          : "opening software video decoder")});
+                                      "opening " + std::string(to_string(decode_backend_)) + " video decoder")});
         }
         codec_thread_count_ = static_cast<std::size_t>(codec_context_->thread_count);
 
